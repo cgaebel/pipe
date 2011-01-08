@@ -1,8 +1,5 @@
 #include "pipe.h"
 
-// Gives us access to glibc's mempcpy
-#define _GNU_SOURCE
-
 #include <assert.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -16,14 +13,12 @@
 #define max(a, b) ((a) >= (b) ? (a) : (b))
 #endif
 
-#ifndef __GNUC__
-
-static inline void* mempcpy(void* dest, const void* src, size_t n)
+// Runs a memcpy, then returns the end of the range copied.
+// Has identical functionality as mempcpy, but is portable.
+static inline void* offset_memcpy(void* restrict dest, const void* restrict src, size_t n)
 {
     return (char*)memcpy(dest, src, n) + n;
 }
-
-#endif
 
 /*
  * Pipe implementation overview
@@ -108,7 +103,8 @@ struct consumer { pipe_t pipe; };
 #define DEFAULT_MINCAP  32
 #endif
 
-// Moves bufend to the end of the buffer, assuming buffer, capacity, and elem_size are all sane.
+// Moves bufend to the end of the buffer, assuming buffer, capacity, and
+// elem_size are all sane.
 static inline void fix_bufend(pipe_t* p)
 {
     p->bufend = p->buffer + p->elem_size * p->capacity;
@@ -206,19 +202,12 @@ static inline void unlock_pipe(pipe_t* p)
 
 #define WHILE_LOCKED(stuff) do { lock_pipe(p); stuff; unlock_pipe(p); } while(0)
 
-#ifdef DEBUG
-#define MUTEX_TYPE  PTHREAD_MUTEX_ERRORCHECK
-#else
-#define MUTEX_TYPE  PTHREAD_MUTEX_DEFAULT
-#endif
-
 static inline void init_mutex(pthread_mutex_t* m)
 {
     pthread_mutexattr_t attr;
 
     ENFORCE(pthread_mutexattr_init(&attr) == 0);
     ENFORCE(pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_PRIVATE) == 0);
-    ENFORCE(pthread_mutexattr_settype(&attr, MUTEX_TYPE) == 0);
 
     ENFORCE(pthread_mutex_init(m, &attr) == 0);
 }
@@ -338,12 +327,12 @@ static inline char* copy_pipe_into_new_buf(const pipe_t* p, char* buf, size_t bu
 
     if(wraps_around(p))
     {
-        buf = mempcpy(buf, p->begin, p->bufend - p->begin);
-        buf = mempcpy(buf, p->buffer, p->end - p->buffer);
+        buf = offset_memcpy(buf, p->begin, p->bufend - p->begin);
+        buf = offset_memcpy(buf, p->buffer, p->end - p->buffer);
     }
     else
     {
-        buf = mempcpy(buf, p->begin, p->end - p->begin);
+        buf = offset_memcpy(buf, p->begin, p->end - p->begin);
     }
 
     return buf;
@@ -392,13 +381,13 @@ static inline void push_without_locking(pipe_t* restrict p, const void* restrict
     // If we currently have a nowrap buffer, we may have to wrap the new
     // elements. Copy as many as we can at the end, then start copying into the
     // beginning. This basically reduces the problem to only deal with wrapped
-    // buffers, which can be dealt with using a single mempcpy.
+    // buffers, which can be dealt with using a single offset_memcpy.
     if(!wraps_around(p))
     {
         size_t at_end = min(bytes_to_copy, p->bufend - p->end);
 
         newend = wrap_if_at_end(
-                     mempcpy(newend, elems, at_end),
+                     offset_memcpy(newend, elems, at_end),
                      p->buffer, p->bufend);
 
         elems = (const char*)elems + at_end;
@@ -407,7 +396,7 @@ static inline void push_without_locking(pipe_t* restrict p, const void* restrict
 
     // Now copy any remaining data...
     newend = wrap_if_at_end(
-                 mempcpy(newend, elems, bytes_to_copy),
+                 offset_memcpy(newend, elems, bytes_to_copy),
                  p->buffer, p->bufend
              );
 
@@ -452,7 +441,7 @@ static inline size_t pop_without_locking(pipe_t* restrict p, void* restrict targ
         // the RHS of a wrapped buffer - whichever is smaller.
         size_t first_bytes_to_copy = min(bytes_remaining, p->bufend - p->begin);
 
-        target = mempcpy(target, p->begin, first_bytes_to_copy);
+        target = offset_memcpy(target, p->begin, first_bytes_to_copy);
 
         bytes_remaining -= first_bytes_to_copy;
         p->begin         = wrap_if_at_end(
@@ -464,7 +453,7 @@ static inline size_t pop_without_locking(pipe_t* restrict p, void* restrict targ
     // [buffer, buffer + bytes_to_copy) into target.
     if(bytes_remaining > 0)
     {
-        target = mempcpy(target, p->buffer, bytes_remaining);
+        memcpy(target, p->buffer, bytes_remaining);
         p->begin = wrap_if_at_end(p->begin + bytes_remaining, p->buffer, p->bufend);
     }    
 
