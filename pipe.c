@@ -287,10 +287,10 @@ static inline void deallocate(pipe_t* p)
 
 void pipe_free(pipe_t* p)
 {
-    assert(p->producer_refcount > 0);
-    assert(p->consumer_refcount > 0);
-
     WHILE_LOCKED(
+        assert(p->producer_refcount > 0);
+        assert(p->consumer_refcount > 0);
+
         --p->producer_refcount;
         --p->consumer_refcount;
 
@@ -304,9 +304,9 @@ void pipe_free(pipe_t* p)
     {                                           \
         pipe_t* restrict p = PIPIFY(handle);    \
                                                 \
-        assert(p->type##_refcount > 0);         \
-                                                \
         WHILE_LOCKED(                           \
+            assert(p->type##_refcount > 0);     \
+                                                \
             --p->type##_refcount;               \
                                                 \
             if(requires_deallocation(p))        \
