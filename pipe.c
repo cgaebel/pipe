@@ -81,8 +81,8 @@ struct pipe {
     size_t producer_refcount;      // The number of producers currently in circulation.
     size_t consumer_refcount;      // The number of consumers currently in circulation.
 
-    pthread_mutex_t m;             // The mutex guarding the WHOLE pipe we use very coarse
-                                   // locking.
+    pthread_mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
+                                   // coarse-grained locking.
     pthread_cond_t  has_new_elems; // Signaled when the pipe has at least one element in it.
 };
 
