@@ -89,7 +89,7 @@ typedef struct consumer consumer_t;
 
 // Initializes a new pipe storing elements of size `elem_size'. A pusher handle
 // is returned, from which you may push elements into the pipe.
-pipe_t*   pipe_new(size_t elem_size);
+pipe_t*     pipe_new(size_t elem_size);
 
 // Makes a production handle to the pipe, allowing push operations. Note that
 // this function is extremely cheap, as it cheats and doesn't even allocate

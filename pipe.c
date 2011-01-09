@@ -63,9 +63,6 @@ static inline void* offset_memcpy(void* restrict dest, const void* restrict src,
  * guarding the pipe, with a condition variable to signal when we have new
  * elements so the blocking consumers can get them. If you modify the pipe,
  * lock the mutex. Keep it locked for as short as possible.
- *
- * TODO: Can we use a spinlock instead of a mutex? We still need to condition
- *       variable on it.
  */
 struct pipe {
     size_t elem_size;  // The size of each element.
