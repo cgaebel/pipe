@@ -1,7 +1,30 @@
+/**
+ * The MIT License
+ * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
 #include "pipe.h"
 
 #include <assert.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -63,14 +86,30 @@ static inline void* offset_memcpy(void* restrict dest, const void* restrict src,
  * guarding the pipe, with a condition variable to signal when we have new
  * elements so the blocking consumers can get them. If you modify the pipe,
  * lock the mutex. Keep it locked for as short as possible.
+ *
+ * Complexity:
+ *
+ * Pushing and popping must run in O(n) where n is the number of elements being
+ * inserted/removed. It must also run in O(1) with respect to the number of
+ * elements in the pipe.
+ *
+ * Efficiency:
+ *
+ * Asserts are used liberally, and many of them, when inlined, can be turned
+ * into no-ops. Therefore, it is recommended that you compile with -O1 in
+ * debug builds as the pipe can easily become a bottleneck.
  */
 struct pipe {
-    size_t elem_size;  // The size of each element.
+    size_t elem_size;  // The size of each element. This is read-only and
+                       // therefore does not need to be locked to read.
     size_t elem_count; // The number of elements currently in the pipe.
     size_t capacity;   // The maximum number of elements the buffer can hold
                        // before a reallocation.
     size_t min_cap;    // The smallest sane capacity before the buffer refuses
                        // to shrink because it would just end up growing again.
+    size_t max_cap;    // The maximum capacity (unlimited if zero) of the pipe
+                       // before push requests are blocked. This is read-only
+                       // and therefore does not need to be locked to read.
 
     char * buffer,     // The internal buffer, holding the enqueued elements.
          * bufend,     // Just a shortcut pointer to the end of the buffer.
@@ -83,7 +122,9 @@ struct pipe {
 
     pthread_mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
                                    // coarse-grained locking.
-    pthread_cond_t  has_new_elems; // Signaled when the pipe has at least one element in it.
+
+    pthread_cond_t  just_pushed;   // Signaled immediately after any push operation.
+    pthread_cond_t  just_popped;   // Signaled immediately after any pop operation.
 };
 
 // Poor man's typedef. For more information, see DEF_NEW_FUNC's typedef.
@@ -149,10 +190,14 @@ static void check_invariants(const pipe_t* p)
     // Give me valid pointers or give me death!
     assert(p);
 
-    // p->buffer may be NULL. When it is, it means the pipe is in the middle of
-    // destruction. If that's the case, we can't check much of anything.
+    // p->buffer may be NULL. When it is, we must have no issued consumers.
+    // It's just a way to save memory when we've deallocated all consumers
+    // and people are still trying to push like idiots.
     if(p->buffer == NULL)
+    {
+        assert(p->consumer_refcount == 0);
         return;
+    }
 
     assert(p->bufend);
     assert(p->begin);
@@ -160,20 +205,24 @@ static void check_invariants(const pipe_t* p)
 
     assert(p->elem_size != 0);
 
-    assert(p->capacity >= p->min_cap && "The buffer's capacity should never drop below the minimum.");
     assert(p->elem_count <= p->capacity && "There are more elements in the buffer than its capacity.");
     assert(p->bufend == p->buffer + p->elem_size*p->capacity && "This is axiomatic. Was fix_bufend not called somewhere?");
 
     assert(in_bounds(p->buffer, p->begin, p->bufend));
     assert(in_bounds(p->buffer, p->end, p->bufend));
 
+    assert(p->min_cap >= DEFAULT_MINCAP);
+    assert(p->min_cap <= p->max_cap);
+    assert(p->capacity >= p->min_cap && p->capacity <= p->max_cap);
+
     assert(p->begin != p->bufend && "The begin pointer should NEVER point to the end of the buffer."
                     "If it does, it should have been automatically moved to the front.");
 
     // Ensure the size accurately reflects the begin/end pointers' positions.
     // Kindly refer to the diagram in struct pipe's documentation =)
-    if(wraps_around(p))
-        assert(p->elem_size*p->elem_count == (p->bufend - p->begin) + (p->end - p->buffer));
+
+    if(wraps_around(p)) //                   v     left half    v   v     right half     v
+        assert(p->elem_size*p->elem_count == (p->end - p->buffer) + (p->bufend - p->begin));
     else
         assert(p->elem_size*p->elem_count == p->end - p->begin);
 }
@@ -210,7 +259,7 @@ static inline void init_mutex(pthread_mutex_t* m)
     ENFORCE(pthread_mutex_init(m, &attr) == 0);
 }
 
-pipe_t* pipe_new(size_t elem_size)
+pipe_t* pipe_new(size_t elem_size, size_t limit)
 {
     assert(elem_size != 0);
 
@@ -226,6 +275,7 @@ pipe_t* pipe_new(size_t elem_size)
     p->elem_count = 0;
     p->capacity =
     p->min_cap  = DEFAULT_MINCAP;
+    p->max_cap  = limit ? max(limit, p->min_cap) : ~(size_t)0;
 
     p->buffer =
     p->begin  =
@@ -241,7 +291,8 @@ pipe_t* pipe_new(size_t elem_size)
 
     init_mutex(&p->m);
 
-    ENFORCE(pthread_cond_init(&p->has_new_elems, NULL) == 0);
+    ENFORCE(pthread_cond_init(&p->just_pushed, NULL) == 0);
+    ENFORCE(pthread_cond_init(&p->just_popped, NULL) == 0);
 
     check_invariants(p);
 
@@ -277,7 +328,9 @@ static inline void deallocate(pipe_t* p)
     pthread_mutex_unlock(&p->m);
 
     pthread_mutex_destroy(&p->m);
-    pthread_cond_destroy(&p->has_new_elems);
+
+    pthread_cond_destroy(&p->just_pushed);
+    pthread_cond_destroy(&p->just_popped);
 
     free(p->buffer);
     free(p);
@@ -297,25 +350,44 @@ void pipe_free(pipe_t* p)
     );
 }
 
-#define DEF_FREE_FUNC(type)                     \
-    void pipe_##type##_free(type##_t* handle)   \
-    {                                           \
-        pipe_t* restrict p = PIPIFY(handle);    \
-                                                \
-        WHILE_LOCKED(                           \
-            assert(p->type##_refcount > 0);     \
-                                                \
-            --p->type##_refcount;               \
-                                                \
-            if(requires_deallocation(p))        \
-                return deallocate(p);           \
-        );                                      \
-    }
+void pipe_producer_free(producer_t* handle)
+{
+    pipe_t* p = PIPIFY(handle);
 
-DEF_FREE_FUNC(producer)
-DEF_FREE_FUNC(consumer)
+    WHILE_LOCKED(
+        assert(p->producer_refcount > 0);
 
-#undef DEF_FREE_FUNC
+        --p->producer_refcount;
+
+        if(requires_deallocation(p))
+            return deallocate(p);
+    );
+}
+
+static inline void free_and_null(char** p)
+{
+    free(*p);
+    *p = NULL;
+}
+
+void pipe_consumer_free(consumer_t* handle)
+{
+    pipe_t* p = PIPIFY(handle);
+
+    WHILE_LOCKED(
+        assert(p->consumer_refcount > 0);
+
+        --p->consumer_refcount;
+
+        // If this was the last consumer out of the gate, we can deallocate the
+        // buffer. It has no use anymore.
+        if(p->consumer_refcount == 0)
+            free_and_null(&p->buffer);
+
+        if(requires_deallocation(p))
+            return deallocate(p);
+    );
+}
 
 // Returns the end of the buffer (buf + number_of_bytes_copied).
 static inline char* copy_pipe_into_new_buf(const pipe_t* p, char* buf, size_t bufsize)
@@ -340,6 +412,10 @@ static void resize_buffer(pipe_t* p, size_t new_size)
 {
     check_invariants(p);
 
+    // Let's NOT resize beyond our maximum capcity. Thanks =)
+    if(new_size >= p->max_cap)
+        new_size = p->max_cap;
+
     // I refuse to resize to a size smaller than what would keep all our
     // elements in the buffer or one that is smaller than the minimum capacity.
     if(new_size <= p->elem_count || new_size < p->min_cap)
@@ -360,17 +436,16 @@ static void resize_buffer(pipe_t* p, size_t new_size)
     check_invariants(p);
 }
 
-static inline void push_without_locking(pipe_t* restrict p, const void* restrict elems, size_t count)
+static inline void push_without_locking(pipe_t* p, const void* elems, size_t count)
 {
-    assert(elems && "Trying to push a NULL pointer into the pipe. That just won't do.");
     check_invariants(p);
 
     if(p->elem_count + count > p->capacity)
         resize_buffer(p, next_pow2(p->elem_count + count));
 
     // Since we've just grown the buffer (if necessary), we now KNOW we have
-    // enough room for the push. So do it
-
+    // enough room for the push. So do it!
+ 
     size_t bytes_to_copy = count*p->elem_size;
 
     // We cache the end locally to avoid wasteful dereferences of p.
@@ -405,24 +480,62 @@ static inline void push_without_locking(pipe_t* restrict p, const void* restrict
     check_invariants(p);
 }
 
-void pipe_push(producer_t* restrict prod, const void* restrict elems, size_t count)
+void pipe_push(producer_t* prod, const void* elems, size_t count)
 {
-    pipe_t *restrict p = PIPIFY(prod);
+    pipe_t* p = PIPIFY(prod);
 
-    if(p == NULL)
+    assert(elems && "Trying to push a NULL pointer into the pipe. That just won't do.");
+    assert(p);
+
+    if(count == 0)
         return;
 
+    size_t max_cap = p->max_cap;
+
+    // If we're trying to push in more than the maximum capacity, we can split
+    // up the elements into two sets. One which is just big enough, and the
+    // other can be whatever size, as it will also hit the recursive case if
+    // it's too large.
+    if(count > max_cap)
+    {
+        size_t bytes_needed = max_cap * p->elem_size;
+
+        pipe_push(prod, elems, bytes_needed);
+        pipe_push(prod, (const char*)elems + bytes_needed, count - max_cap);
+        return;
+    }
+
+    size_t elems_pushed = 0;
+
     WHILE_LOCKED(
-        push_without_locking(p, elems, count);
+        // Wait for there to be enough room in the buffer for some new elements.
+        while(p->elem_count == max_cap && p->consumer_refcount > 0)
+            pthread_cond_wait(&p->just_popped, &p->m);
+
+        // Don't perform an actual push if we have no consumers issued. The
+        // buffer's been freed.
+        if(p->consumer_refcount == 0)
+            return unlock_pipe(p);
+
+        // Push as many elements into the queue as possible.
+        push_without_locking(p, elems,
+            elems_pushed = min(count, max_cap - p->elem_count)
+        );
+
+        assert(elems_pushed > 0);
     );
 
-    pthread_cond_broadcast(&p->has_new_elems);
+    pthread_cond_broadcast(&p->just_pushed);
+
+    // now get the rest of the elements, which we didn't have enough room for
+    // in the pipe.
+    size_t elems_left = count - elems_pushed;
+    pipe_push(prod, (const char*)elems + elems_pushed*p->elem_size, elems_left);
 }
 
 // wow, I didn't even intend for the name to work like that...
-static inline size_t pop_without_locking(pipe_t* restrict p, void* restrict target, size_t count)
+static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
 {
-    assert(target && "Why are we trying to pop elements out of a pipe and into a NULL buffer?");
     check_invariants(p);
 
     const size_t elems_to_copy   = min(count, p->elem_count);
@@ -469,24 +582,29 @@ static inline size_t pop_without_locking(pipe_t* restrict p, void* restrict targ
     return elems_to_copy;
 }
 
-size_t pipe_pop(consumer_t* restrict c, void* restrict target, size_t count)
+size_t pipe_pop(consumer_t* c, void* target, size_t count)
 {
-    pipe_t* restrict p = PIPIFY(c);
+    pipe_t* p = PIPIFY(c);
 
-    if(p == NULL)
-        return 0;
+    assert(target && "Why are we trying to pop elements out of a pipe and into a NULL buffer?");
+    assert(p);
+
+    if(count > p->max_cap)
+        count = p->max_cap;
 
     size_t ret;
 
     WHILE_LOCKED(
         // While we need more elements and there exists at least one producer...
         while(p->elem_count < count && p->producer_refcount > 0)
-            pthread_cond_wait(&p->has_new_elems, &p->m);
+            pthread_cond_wait(&p->just_pushed, &p->m);
 
         ret = p->elem_count > 0
               ? pop_without_locking(p, target, count)
               : 0;
     );
+
+    pthread_cond_broadcast(&p->just_popped);
 
     return ret;
 }
@@ -502,7 +620,7 @@ void pipe_reserve(pipe_t* p, size_t count)
     WHILE_LOCKED(
         if(count > p->elem_count)
         {
-            p->min_cap = count;
+            p->min_cap = min(count, p->max_cap);
             resize_buffer(p, count);
         }
     );

@@ -1,13 +1,27 @@
+/**
+ * The MIT License
+ * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
 #pragma once
 #include <stddef.h>
-
-#ifndef __cplusplus
-#include <stdbool.h>
-#endif
-
-#ifndef restrict
-#define restrict
-#endif
 
 /*
  * A pipe is a collection of elements, enqueued and dequeued in a FIFO pattern.
@@ -89,7 +103,12 @@ typedef struct consumer consumer_t;
 
 // Initializes a new pipe storing elements of size `elem_size'. A pusher handle
 // is returned, from which you may push elements into the pipe.
-pipe_t*     pipe_new(size_t elem_size);
+//
+// If `limit' is 0, the pipe has no maximum size. If it is nonzero, the pipe
+// will never have more than `limit' elements in it at any one time. This can
+// help prevent an explosion of memory usage in cases where production is
+// significantly faster than consumption. In most cases, you want this to be 0.
+pipe_t*     pipe_new(size_t elem_size, size_t limit);
 
 // Makes a production handle to the pipe, allowing push operations. Note that
 // this function is extremely cheap, as it cheats and doesn't even allocate
@@ -112,18 +131,19 @@ void pipe_producer_free(producer_t* p);
 void pipe_consumer_free(consumer_t* p);
 
 // Copies `count' elements from `elems' into the pipe.
-void pipe_push(producer_t* restrict p, const void* restrict elems, size_t count);
+void pipe_push(producer_t* p, const void* elems, size_t count);
 
 // Tries to pop `count' elements out of the pipe and into `target', returning
 // the number of elements successfully copied. If there aren't at least `count'
 // elements currently in the pipe, this function will block until:
 //
 //   a) there are enough elements to fill the request entirely or
-//   b) all producer_t handles have been freed (including the parent pipe_t).
+//   b) the pipe's maximum capacity has been hit or
+//   c) all producer_t handles have been freed (including the parent pipe_t).
 //
-// Therefore, if this function returns anything except for `count', there will
-// be no more elements coming in. Every subsequent call will return 0.
-size_t pipe_pop(consumer_t* restrict p, void* restrict target, size_t count);
+// Therefore, if this function returns 0, there will be no more elements coming
+// in. Every subsequent call will return 0.
+size_t pipe_pop(consumer_t* p, void* target, size_t count);
 
 // Modifies the pipe to never have room for less than `count' elements.
 // This can be useful if you want to save memory (if the pipe will always be
@@ -134,65 +154,7 @@ size_t pipe_pop(consumer_t* restrict p, void* restrict target, size_t count);
 // default, set count to 0.
 void pipe_reserve(pipe_t* p, size_t count);
 
-#ifdef __cplusplus
-
-// NOTE: `T' should be a POD struct. If T has fancy construction/destruction
-// semantics, everything will fuck up. It will be freely memcpy'd, malloc'd,
-// and free'd.
-template <typename T>
-class Pipe
-{
-public:
-    class Producer
-    {
-    private:
-        friend class Pipe<T>;
-
-        pipe_t* parent;
-        producer_t* p;
-
-        Producer(pipe_t* pipe) : p(pipe_producer_new(pipe)) {}
-
-    public:
-        Producer(const Producer& o) : parent(o.parent), p(pipe_producer_new(o.parent)) {}
-
-        void push(const T* elems, size_t count) { pipe_push(p, (const void*)elems, count); }
-
-        ~Producer() { pipe_producer_free(p); }
-    };
-
-   class Consumer
-    {
-    private:
-        friend class Pipe<T>;
-
-        pipe_t* parent;
-        consumer_t* p;
-
-        Consumer(pipe_t* pipe) : parent(pipe), p(pipe_consumer_new(pipe)) {}
-
-    public:
-        Consumer(const Consumer& o) : parent(o.parent), p(pipe_consumer_new(o.parent)) {}
-
-        size_t pop(T* target, size_t count) { return pipe_pop(p, target, count); }
-
-        ~Consumer() { pipe_consumer_free(p); }
-    };
-
-private:
-    pipe_t* p;
-
-    Pipe(const Pipe&); // = delete;
-
-public:
-    Pipe() : p(pipe_new(sizeof(T))) {}
-
-    Producer new_producer() { return Producer(p); }
-    Consumer new_consumer() { return Consumer(p); }
-
-    void reserve(size_t count) { pipe_reserve(p, count); }
-
-    ~Pipe() { pipe_free(p); }
-};
-
-#endif
+// Use this to run the pipe self-test. It will call abort() if anything is
+// wrong. You probably don't want to call this. If you never do, you don't need
+// to link pipe_test.c
+void pipe_run_test_suite();
