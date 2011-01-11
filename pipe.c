@@ -64,40 +64,36 @@ static inline void* offset_memcpy(void* restrict dest, const void* restrict src,
  *       [============>                    >=====================]
  *
  * In this case, the data storage is split up, wrapping around to the beginning
- * of the buffer when it hits bufend. Hackery must be done in this case to
- * ensure the structure is maintained and data can be easily copied in/out.
+ * of the buffer when it hits bufend. This case is more complex, as it ensures
+ * the structure is maintained, and data can be easily copied in/out.
  *
  * Invariants:
  *
  * The invariants of a pipe are documented in the check_invariants function,
- * and double-checked frequently in debug builds. This helps restore sanity when
+ * and checked frequently in debug builds. This helps restore sanity when
  * making modifications, but may slow down calls. It's best to disable the
  * checks in release builds.
  *
  * Thread-safety:
  *
- * pipe_t has been designed with high threading workloads foremost in my mind.
- * Its initial purpose was to serve as a task queue, with multiple threads
- * feeding data in (from disk, network, etc) and multiple threads reading it
- * and processing it in parallel. This created the need for a fully re-entrant,
- * lightweight, accomodating data structure.
+ * pipe_t has been designed primarily with high threading workloads in mind.
  *
- * No fancy threading tricks are used thus far. It's just a simple mutex
- * guarding the pipe, with a condition variable to signal when we have new
+ * No complex threading tricks are used; there's a simple mutex
+ * guarding the pipe, with a condition variable to signal when there are new
  * elements so the blocking consumers can get them. If you modify the pipe,
- * lock the mutex. Keep it locked for as short as possible.
+ * lock the mutex. Keep it locked for as short a time as possible.
  *
  * Complexity:
  *
  * Pushing and popping must run in O(n) where n is the number of elements being
  * inserted/removed. It must also run in O(1) with respect to the number of
- * elements in the pipe.
+ * elements currently in the pipe.
  *
  * Efficiency:
  *
  * Asserts are used liberally, and many of them, when inlined, can be turned
  * into no-ops. Therefore, it is recommended that you compile with -O1 in
- * debug builds as the pipe can easily become a bottleneck.
+ * debug builds, as the pipe can easily become a bottleneck.
  */
 struct pipe {
     size_t elem_size;  // The size of each element. This is read-only and
@@ -106,22 +102,21 @@ struct pipe {
     size_t capacity;   // The maximum number of elements the buffer can hold
                        // before a reallocation.
     size_t min_cap;    // The smallest sane capacity before the buffer refuses
-                       // to shrink because it would just end up growing again.
-    size_t max_cap;    // The maximum capacity (unlimited if zero) of the pipe
-                       // before push requests are blocked. This is read-only
-                       // and therefore does not need to be locked to read.
+                       // to shrink.
+    size_t max_cap;    // The maximum capacity of the pipe before push requests
+                       // are blocked. This is read-only and therefore does not
+                       // need to be locked to read.
 
     char * buffer,     // The internal buffer, holding the enqueued elements.
          * bufend,     // Just a shortcut pointer to the end of the buffer.
-                       // It helps me not constantly type (p->buffer + p->elem_size*p->capacity).
-         * begin,      // Always points to the left-most/first-pushed element in the pipe.
-         * end;        // Always points to the right-most/last-pushed element in the pipe.
+                       // It helps to not constantly type (p->buffer + p->elem_size*p->capacity).
+         * begin,      // Always points to the least-recently pushed element in the pipe.
+         * end;        // Always points to the most-recently pushed element in the pipe.
 
     size_t producer_refcount;      // The number of producers currently in circulation.
     size_t consumer_refcount;      // The number of consumers currently in circulation.
 
-    pthread_mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
-                                   // coarse-grained locking.
+    pthread_mutex_t m;             // The mutex guarding the WHOLE pipe.
 
     pthread_cond_t  just_pushed;   // Signaled immediately after any push operation.
     pthread_cond_t  just_popped;   // Signaled immediately after any pop operation.
@@ -142,8 +137,8 @@ struct consumer { pipe_t pipe; };
 #define DEFAULT_MINCAP  32
 #endif
 
-// Moves bufend to the end of the buffer, assuming buffer, capacity, and
-// elem_size are all sane.
+// Moves bufend to the end of the buffer in the event that bufend is not valid,
+// and assuming buffer, capacity, and elem_size are all sane.
 static inline void fix_bufend(pipe_t* p)
 {
     p->bufend = p->buffer + p->elem_size * p->capacity;
@@ -163,36 +158,33 @@ static inline bool in_bounds(const void* left, const void* p, const void* right)
     return p >= left && p <= right;
 }
 
-// Wraps the begin (and possibly end) pointers of p to the beginning of the
-// buffer if they've hit the end.
+// return p if it's before the end of the buffer, otherwise return the
+// beginning.
 static inline char* wrap_if_at_end(char* p, char* begin, const char* end)
 {
     return p == end ? begin : p;
 }
 
+// round up to the next power of two
 static inline size_t next_pow2(size_t n)
 {
     for(size_t i = 1; i != 0; i <<= 1)
         if(n <= i)
             return i;
 
-    // Holy shit it must be a huge number to get here. I'm scared. Let's not double
-    // the size in this case.
+    // the number is too big to safely double
     return n;
 }
 
-// You know all those assumptions we make about our data structure whenever we
-// use it? This function checks them, and is called liberally through the
-// codebase. It would be best to read this function over, as it also acts as
-// documentation. Code AND documentation? What is this witchcraft?
+// This function is called liberally through the codebase. It would be best to
+// read this function over, as it also acts as documentation.
 static void check_invariants(const pipe_t* p)
 {
-    // Give me valid pointers or give me death!
     assert(p);
 
     // p->buffer may be NULL. When it is, we must have no issued consumers.
-    // It's just a way to save memory when we've deallocated all consumers
-    // and people are still trying to push like idiots.
+    // It's just a way to save memory when all consumers have been deallocated
+    // and push requests are still being made
     if(p->buffer == NULL)
     {
         assert(p->consumer_refcount == 0);
@@ -219,7 +211,7 @@ static void check_invariants(const pipe_t* p)
                     "If it does, it should have been automatically moved to the front.");
 
     // Ensure the size accurately reflects the begin/end pointers' positions.
-    // Kindly refer to the diagram in struct pipe's documentation =)
+    // Refer to the diagram in pipe's documentation.
 
     if(wraps_around(p)) //                   v     left half    v   v     right half     v
         assert(p->elem_size*p->elem_count == (p->end - p->buffer) + (p->bufend - p->begin));
@@ -247,7 +239,7 @@ static inline void unlock_pipe(pipe_t* p)
     ENFORCE(pthread_mutex_unlock(&p->m) == 0);
 }
 
-#define WHILE_LOCKED(stuff) do { lock_pipe(p); stuff; unlock_pipe(p); } while(0)
+#define WHILE_LOCKED(stuff) do { lock_pipe(p); stuff unlock_pipe(p); } while(0)
 
 static inline void init_mutex(pthread_mutex_t* m)
 {
@@ -269,13 +261,13 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     pipe_t* p = malloc(sizeof(pipe_t));
 
     if(p == NULL)
-        return p;
+        return NULL;
 
     p->elem_size = elem_size;
     p->elem_count = 0;
     p->capacity =
     p->min_cap  = DEFAULT_MINCAP;
-    p->max_cap  = limit ? max(limit, p->min_cap) : ~(size_t)0;
+    p->max_cap  = limit != 0 ? next_pow2(max(limit, p->min_cap)) : ~(size_t)0;
 
     p->buffer =
     p->begin  =
@@ -285,9 +277,8 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
 
     p->producer_refcount =
     p->consumer_refcount = 1;    // Since we're issuing a pipe_t, it counts as both
-                                 // a pusher and a popper since it can issue
-                                 // new instances of both. Therefore, the count of
-                                 // both starts at 1 - not the intuitive 0.
+                                 // a producer and a consumer, since it can issue
+                                 // new instances of both.
 
     init_mutex(&p->m);
 
@@ -299,8 +290,6 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     return p;
 }
 
-// Yes, this is a total hack. What of it?
-//
 // What we do after incrementing the refcount is casting our pipe to the
 // appropriate handle. Since the handle is defined with pipe_t as the
 // first member (therefore lying at offset 0), we can secretly pass around
@@ -389,7 +378,7 @@ void pipe_consumer_free(consumer_t* handle)
     );
 }
 
-// Returns the end of the buffer (buf + number_of_bytes_copied).
+// Returns the end of the buffer (i.e. buf + number_of_bytes_copied).
 static inline char* copy_pipe_into_new_buf(const pipe_t* p, char* buf, size_t bufsize)
 {
     assert(bufsize >= p->elem_size * p->elem_count && "Trying to copy into a buffer that's too small.");

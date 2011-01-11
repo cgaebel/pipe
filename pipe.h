@@ -31,14 +31,9 @@
  *
  * pipe_t
  *
- * pipe_t is used as a god handle. If there is a valid pipe_t in circulation,
- * you may create producer_t and consumer_t handles from it. It also allows you
- * to run maintainance tasks such as pipe_reserve. Since you can create
- * producer_t handles from it, a pipe_t "counts" as a producer. Therefore,
- * consumers will still wait for elements if a pipe_t has been issued, even if
- * there are no other producers. Try and keep the pipe_t allocated for as short
- * a time as possible. This means you should make all your producer and
- * consumer handles at the start, then use those for the duration of your task.
+ * If there is a valid pipe_t in circulation, you may create producer_t and
+ * consumer_t handles from it. It also allows you to run maintainance tasks
+ * such as pipe_reserve.
  *
  *   Sample code:
  *
@@ -58,16 +53,19 @@
  * producer_t
  *
  * producer_t is used for pushing into the pipe. It is recommended that each
- * thread has their own (as it keeps ownership semantics simple), however, it
+ * thread has their own (as it keeps ownership semantics simple); however, it
  * is not mandatory. As long as there is at least one producer_t in circulation,
- * consumers will block until they can fill their buffers.
+ * consumers will block until they can fill their buffers. A pipe_t also counts
+ * as a producer_t, since valid producer_t handles can be created from it.
  *
  * consumer_t
  *
  * consumer_t is used for popping from the pipe. It is recommended that each
  * thread has their own (as it keeps ownership semantics simple), however, it
- * is not mandatory. As long as there is at least one producer_t in circulation,
- * a consumer_t will block until the buffer can be filled.
+ * is not mandatory. As long as there is at least one producer_t or pipe_t in
+ * circulation, a consumer_t will block until the buffer can be filled. A
+ * pipe_t also counts as a consumer_t, since valid consumer_t handles can be
+ * created from it.
  *
  *   Sample code:
  *
@@ -85,6 +83,11 @@
  *
  *       pipe_consumer_free(p);
  *   }
+ *
+ * Try and keep the pipe_t allocated for as short a time as possible. This
+ * means you should make all your producer and consumer handles at the start,
+ * deallocate the pipe_t, then use producers and consumers for the duration
+ * of your task.
  *
  * Guarantees:
  *
@@ -105,25 +108,22 @@ typedef struct consumer consumer_t;
 // is returned, from which you may push elements into the pipe.
 //
 // If `limit' is 0, the pipe has no maximum size. If it is nonzero, the pipe
-// will never have more than `limit' elements in it at any one time. This can
-// help prevent an explosion of memory usage in cases where production is
-// significantly faster than consumption. In most cases, you want this to be 0.
+// will never have more than `limit' elements in it at any time. In most cases,
+// you want this to be 0. However, limits help prevent an explosion of memory
+// usage in cases where production is significantly faster than consumption.
 pipe_t*     pipe_new(size_t elem_size, size_t limit);
 
-// Makes a production handle to the pipe, allowing push operations. Note that
-// this function is extremely cheap, as it cheats and doesn't even allocate
-// memory.
+// Makes a production handle to the pipe, allowing push operations. This
+// function is extremely cheap: it doesn't allocate memory.
 producer_t* pipe_producer_new(pipe_t* p);
 
-// Makes a consumption handle to the pipe, allowing pop operations. Note that
-// this function is extremely cheap, as it cheats and doesn't even allocate
-// memory.
+// Makes a consumption handle to the pipe, allowing pop operations. This
+// function is extremely cheap: it doesn't allocate memory.
 consumer_t* pipe_consumer_new(pipe_t* p);
 
 /*
- * As a general rule of thumb, if you call *_new, you must call the matching
- * *_free. Failure to do so may result in resource leaks, undefined behavior,
- * and spontaneous combustion.
+ * If you call *_new, you must call the corresponding *_free. Failure to do so
+ * may result in resource leaks and undefined behavior.
  */
 
 void pipe_free(pipe_t* p);
@@ -137,24 +137,23 @@ void pipe_push(producer_t* p, const void* elems, size_t count);
 // the number of elements successfully copied. If there aren't at least `count'
 // elements currently in the pipe, this function will block until:
 //
-//   a) there are enough elements to fill the request entirely or
-//   b) the pipe's maximum capacity has been hit or
+//   a) there are enough elements to fill the request entirely,
+//   b) the pipe's maximum capacity has been hit, or
 //   c) all producer_t handles have been freed (including the parent pipe_t).
 //
-// Therefore, if this function returns 0, there will be no more elements coming
-// in. Every subsequent call will return 0.
+// If this function returns 0, there will be no more elements coming in. Every
+// subsequent call will return 0.
 size_t pipe_pop(consumer_t* p, void* target, size_t count);
 
-// Modifies the pipe to never have room for less than `count' elements.
-// This can be useful if you want to save memory (if the pipe will always be
-// short) or if you tend to burst your requests (such as random 1024 element
-// pushes).
+// Modifies the pipe to have room for at least `count' elements. If more room
+// is already allocated, the call does nothing. This can be useful if requests
+// tend to come in bursts.
 //
 // The default minimum is 32 elements. To reset the reservation size to the
 // default, set count to 0.
 void pipe_reserve(pipe_t* p, size_t count);
 
 // Use this to run the pipe self-test. It will call abort() if anything is
-// wrong. You probably don't want to call this. If you never do, you don't need
-// to link pipe_test.c
+// wrong. This is usually unnecessary. If this is never called, pipe_test.c
+// does not need to be linked.
 void pipe_run_test_suite();
