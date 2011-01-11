@@ -401,16 +401,15 @@ static void resize_buffer(pipe_t* p, size_t new_size)
 {
     check_invariants(p);
 
-    // Let's NOT resize beyond our maximum capcity. Thanks =)
+    // Don't resize past the max
     if(new_size >= p->max_cap)
         new_size = p->max_cap;
 
-    // I refuse to resize to a size smaller than what would keep all our
-    // elements in the buffer or one that is smaller than the minimum capacity.
+    // Don't resize below the min or to too small to hold all our elements
     if(new_size <= p->elem_count || new_size < p->min_cap)
         return;
 
-    size_t new_size_in_bytes = new_size*p->elem_size;
+    size_t new_size_in_bytes = new_size * p->elem_size;
 
     char* new_buf = malloc(new_size_in_bytes);
     p->end = copy_pipe_into_new_buf(p, new_buf, new_size_in_bytes);
@@ -425,19 +424,18 @@ static void resize_buffer(pipe_t* p, size_t new_size)
     check_invariants(p);
 }
 
+// Pushes `elems' to the buffer, growing it if necessary
 static inline void push_without_locking(pipe_t* p, const void* elems, size_t count)
 {
     check_invariants(p);
 
+    // if there's not enough room for the push, grow the buffer
     if(p->elem_count + count > p->capacity)
         resize_buffer(p, next_pow2(p->elem_count + count));
 
-    // Since we've just grown the buffer (if necessary), we now KNOW we have
-    // enough room for the push. So do it!
- 
-    size_t bytes_to_copy = count*p->elem_size;
+    size_t bytes_to_copy = count * p->elem_size;
 
-    // We cache the end locally to avoid wasteful dereferences of p.
+    // Cache the end locally to avoid wasteful dereferences of p.
     char* newend = p->end;
 
     // If we currently have a nowrap buffer, we may have to wrap the new
@@ -446,7 +444,8 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     // buffers, which can be dealt with using a single offset_memcpy.
     if(!wraps_around(p))
     {
-        size_t at_end = min(bytes_to_copy, p->bufend - p->end);
+		// the number of bytes we can copy before hitting the end
+        size_t at_end = min(bytes_to_copy, p->bufend - newend);
 
         newend = wrap_if_at_end(
                      offset_memcpy(newend, elems, at_end),
@@ -469,11 +468,13 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     check_invariants(p);
 }
 
+// Pushes `elems' to the buffer. If not enough space is available, we lock
+// until it IS available.
 void pipe_push(producer_t* prod, const void* elems, size_t count)
 {
     pipe_t* p = PIPIFY(prod);
 
-    assert(elems && "Trying to push a NULL pointer into the pipe. That just won't do.");
+    assert(elems && "Trying to push a NULL pointer into the pipe.");
     assert(p);
 
     if(count == 0)
@@ -482,22 +483,23 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
     size_t max_cap = p->max_cap;
 
     // If we're trying to push in more than the maximum capacity, we can split
-    // up the elements into two sets. One which is just big enough, and the
-    // other can be whatever size, as it will also hit the recursive case if
-    // it's too large.
+    // up the elements into two sets: one is the perfect size, and the other is
+	// the remaining elements, handled recursively.
     if(count > max_cap)
     {
-        size_t bytes_needed = max_cap * p->elem_size;
+        size_t bytes_pushed = max_cap * p->elem_size;
 
-        pipe_push(prod, elems, bytes_needed);
-        pipe_push(prod, (const char*)elems + bytes_needed, count - max_cap);
+        pipe_push(prod, elems, max_cap);
+        pipe_push(prod, (const char*)elems + bytes_pushed, count - max_cap);
         return;
     }
 
     size_t elems_pushed = 0;
 
     WHILE_LOCKED(
-        // Wait for there to be enough room in the buffer for some new elements.
+        // Wait for there to be enough room in the buffer for some new
+		// elements, or until it's clear no more elements will be popped
+		// (i.e. there are no more consumers).
         while(p->elem_count == max_cap && p->consumer_refcount > 0)
             pthread_cond_wait(&p->just_popped, &p->m);
 
@@ -519,10 +521,9 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
     // now get the rest of the elements, which we didn't have enough room for
     // in the pipe.
     size_t elems_left = count - elems_pushed;
-    pipe_push(prod, (const char*)elems + elems_pushed*p->elem_size, elems_left);
+    pipe_push(prod, (const char*)elems + elems_pushed * p->elem_size, elems_left);
 }
 
-// wow, I didn't even intend for the name to work like that...
 static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
 {
     check_invariants(p);
@@ -530,12 +531,10 @@ static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
     const size_t elems_to_copy   = min(count, p->elem_count);
           size_t bytes_remaining = elems_to_copy * p->elem_size;
 
-    assert(bytes_remaining <= p->elem_count*p->elem_size);
-
     // We're about to pop the elements. Fix the count now.
     p->elem_count -= elems_to_copy;
 
-//  Copy [begin, min(bufend, begin + bytes_to_copy)) into target.
+    //  Copy [begin, min(bufend, begin + bytes_to_copy)) into target.
     {
         // Copy either as many bytes as requested, or the available bytes in
         // the RHS of a wrapped buffer - whichever is smaller.
@@ -575,7 +574,7 @@ size_t pipe_pop(consumer_t* c, void* target, size_t count)
 {
     pipe_t* p = PIPIFY(c);
 
-    assert(target && "Why are we trying to pop elements out of a pipe and into a NULL buffer?");
+    assert(target && "Popping from a NULL buffer.");
     assert(p);
 
     if(count > p->max_cap)
@@ -584,7 +583,8 @@ size_t pipe_pop(consumer_t* c, void* target, size_t count)
     size_t ret;
 
     WHILE_LOCKED(
-        // While we need more elements and there exists at least one producer...
+        // Wait until there are elements to pop, or it's clear there will never
+		// be anymore elements (i.e. if there are no producers left).
         while(p->elem_count < count && p->producer_refcount > 0)
             pthread_cond_wait(&p->just_pushed, &p->m);
 
