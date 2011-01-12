@@ -482,24 +482,12 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
 
     size_t max_cap = p->max_cap;
 
-    // If we're trying to push in more than the maximum capacity, we can split
-    // up the elements into two sets: one is the perfect size, and the other is
-	// the remaining elements, handled recursively.
-    if(count > max_cap)
-    {
-        size_t bytes_pushed = max_cap * p->elem_size;
-
-        pipe_push(prod, elems, max_cap);
-        pipe_push(prod, (const char*)elems + bytes_pushed, count - max_cap);
-        return;
-    }
-
     size_t elems_pushed = 0;
 
     WHILE_LOCKED(
         // Wait for there to be enough room in the buffer for some new
-		// elements, or until it's clear no more elements will be popped
-		// (i.e. there are no more consumers).
+        // elements, or until it's clear no more elements will be popped
+        // (i.e. there are no more consumers).
         while(p->elem_count == max_cap && p->consumer_refcount > 0)
             pthread_cond_wait(&p->just_popped, &p->m);
 
@@ -584,7 +572,7 @@ size_t pipe_pop(consumer_t* c, void* target, size_t count)
 
     WHILE_LOCKED(
         // Wait until there are elements to pop, or it's clear there will never
-		// be anymore elements (i.e. if there are no producers left).
+        // be anymore elements (i.e. if there are no producers left).
         while(p->elem_count < count && p->producer_refcount > 0)
             pthread_cond_wait(&p->just_pushed, &p->m);
 
