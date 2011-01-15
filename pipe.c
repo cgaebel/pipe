@@ -23,8 +23,10 @@
 #include "pipe.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -172,12 +174,27 @@ static inline char* wrap_if_at_end(char* p, char* begin, const char* end)
 
 static inline size_t next_pow2(size_t n)
 {
-    for(size_t i = 1; i != 0; i <<= 1)
-        if(n <= i)
-            return i;
+    // I don't see why we would even try. Maybe a stacktrace will help.
+    assert(n != 0);
 
-    // Holy shit it must be a huge number to get here. I'm scared. Let's not double
-    // the size in this case.
+    size_t top = ~(size_t)0; // 1111111..
+    top = (top >> 1) + 1;    // 1000000..
+
+    // If when we round up we will overflow our size_t, avoid rounding up and
+    // exit early.
+    if(n >= top)
+        return n;
+
+    // Therefore, at this point we have something that can be rounded up.
+    // http://bits.stephan-brumme.com/roundUpToNextPowerOfTwo.html
+
+    n--;
+
+    for(size_t shift = 1; shift < sizeof(size_t)*CHAR_BIT; shift <<= 1)
+        n |= n >> shift;
+
+    n++;
+
     return n;
 }
 
@@ -440,16 +457,20 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
 {
     check_invariants(p);
 
-    if(p->elem_count + count > p->capacity)
-        resize_buffer(p, next_pow2(p->elem_count + count));
+    const size_t elem_count = p->elem_count,
+                 elem_size  = p->elem_size;
+
+    if(elem_count + count > p->capacity)
+        resize_buffer(p, next_pow2(elem_count + count));
 
     // Since we've just grown the buffer (if necessary), we now KNOW we have
     // enough room for the push. So do it!
  
-    size_t bytes_to_copy = count*p->elem_size;
+    size_t bytes_to_copy = count*elem_size;
 
-    // Cache the end locally to avoid wasteful dereferences of p.
-    char* newend = p->end;
+    char* const buffer = p->buffer;
+    char* const bufend = p->bufend;
+    char*       end    = p->end;
 
     // If we currently have a nowrap buffer, we may have to wrap the new
     // elements. Copy as many as we can at the end, then start copying into the
@@ -457,24 +478,24 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     // buffers, which can be dealt with using a single offset_memcpy.
     if(!wraps_around(p))
     {
-        size_t at_end = min(bytes_to_copy, p->bufend - p->end);
+        size_t at_end = min(bytes_to_copy, bufend - end);
 
-        newend = wrap_if_at_end(
-                     offset_memcpy(newend, elems, at_end),
-                     p->buffer, p->bufend);
+        end = wrap_if_at_end(
+                     offset_memcpy(end, elems, at_end),
+                     p->buffer, bufend);
 
         elems = (const char*)elems + at_end;
         bytes_to_copy -= at_end;
     }
 
     // Now copy any remaining data...
-    newend = wrap_if_at_end(
-                 offset_memcpy(newend, elems, bytes_to_copy),
-                 p->buffer, p->bufend
-             );
+    end = wrap_if_at_end(
+              offset_memcpy(end, elems, bytes_to_copy),
+              buffer, bufend
+          );
 
     // ...and update the end pointer and count!
-    p->end         = newend;
+    p->end         = end;
     p->elem_count += count;
 
     check_invariants(p);
@@ -490,8 +511,8 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
     if(count == 0)
         return;
 
-    size_t elem_size = p->elem_size;
-    size_t max_cap   = p->max_cap;
+    const size_t elem_size = p->elem_size,
+                 max_cap   = p->max_cap;
 
     size_t elems_pushed = 0;
 
@@ -532,35 +553,46 @@ static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
 {
     check_invariants(p);
 
-    const size_t elems_to_copy   = min(count, p->elem_count);
-          size_t bytes_remaining = elems_to_copy * p->elem_size;
+          size_t elem_count = p->elem_count;
+    const size_t elem_size  = p->elem_size;
 
-    assert(bytes_remaining <= p->elem_count*p->elem_size);
+    const size_t elems_to_copy   = min(count, elem_count);
+          size_t bytes_remaining = elems_to_copy * elem_size;
 
-    // We're about to pop the elements. Fix the count now.
-    p->elem_count -= elems_to_copy;
+    assert(bytes_remaining <= elem_count*elem_size);
+
+    p->elem_count =
+       elem_count = elem_count - elems_to_copy;
+
+    char* const buffer = p->buffer;
+    char* const bufend = p->bufend;
+    char*       begin  = p->begin;
 
 //  Copy [begin, min(bufend, begin + bytes_to_copy)) into target.
     {
         // Copy either as many bytes as requested, or the available bytes in
         // the RHS of a wrapped buffer - whichever is smaller.
-        size_t first_bytes_to_copy = min(bytes_remaining, p->bufend - p->begin);
+        size_t first_bytes_to_copy = min(bytes_remaining, bufend - begin);
 
-        target = offset_memcpy(target, p->begin, first_bytes_to_copy);
+        target = offset_memcpy(target, begin, first_bytes_to_copy);
 
         bytes_remaining -= first_bytes_to_copy;
-        p->begin         = wrap_if_at_end(
-                               p->begin + first_bytes_to_copy,
-                               p->buffer, p->bufend);
+        begin            = wrap_if_at_end(
+                               begin + first_bytes_to_copy,
+                               buffer, bufend);
     }
 
     // If we're dealing with a wrap buffer, copy the remaining bytes
     // [buffer, buffer + bytes_to_copy) into target.
     if(bytes_remaining > 0)
     {
-        memcpy(target, p->buffer, bytes_remaining);
-        p->begin = wrap_if_at_end(p->begin + bytes_remaining, p->buffer, p->bufend);
-    }    
+        memcpy(target, buffer, bytes_remaining);
+        begin = wrap_if_at_end(begin + bytes_remaining, buffer, bufend);
+    }
+
+    // Since we cached begin on the stack, we need to reflect our changes back
+    // on the pipe.
+    p->begin = begin;
 
     check_invariants(p);
 
@@ -570,8 +602,10 @@ static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
     // or pop, we only shrink it to bring us up to a 50% efficiency. A common
     // pipe usage pattern is sudden bursts of pushes and pops. This ensures it
     // doesn't get too time-inefficient.
-    if(p->elem_count <= (p->capacity / 4))
-        resize_buffer(p, p->capacity / 2);
+    size_t capacity = p->capacity;
+
+    if(elem_count <=    (capacity / 4))
+        resize_buffer(p, capacity / 2);
 
     return elems_to_copy;
 }
