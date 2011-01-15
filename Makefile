@@ -3,8 +3,8 @@ CC=gcc
 OBJS=main.c pipe.c pipe_test.c
 NAME=pipe
 
-CFLAGS=-Wall -fstrict-aliasing -std=c99 -pthread
-D_CFLAGS=-DDEBUG -O
+CFLAGS=-Wall -fstrict-aliasing -std=c99 -pthread -DFORTIFY_SOURCE=1
+D_CFLAGS=-DDEBUG
 R_CFLAGS=-DNDEBUG -O3
 
 all: pipe_debug pipe_release
