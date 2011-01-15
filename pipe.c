@@ -275,7 +275,7 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     p->elem_count = 0;
     p->capacity =
     p->min_cap  = DEFAULT_MINCAP;
-    p->max_cap  = limit ? max(limit, p->min_cap) : ~(size_t)0;
+    p->max_cap  = limit ? next_pow2(max(limit, p->min_cap)) : ~(size_t)0;
 
     p->buffer =
     p->begin  =
@@ -448,7 +448,7 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
  
     size_t bytes_to_copy = count*p->elem_size;
 
-    // We cache the end locally to avoid wasteful dereferences of p.
+    // Cache the end locally to avoid wasteful dereferences of p.
     char* newend = p->end;
 
     // If we currently have a nowrap buffer, we may have to wrap the new
@@ -490,36 +490,29 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
     if(count == 0)
         return;
 
-    size_t max_cap = p->max_cap;
-
-    // If we're trying to push in more than the maximum capacity, we can split
-    // up the elements into two sets. One which is just big enough, and the
-    // other can be whatever size, as it will also hit the recursive case if
-    // it's too large.
-    if(count > max_cap)
-    {
-        size_t bytes_needed = max_cap * p->elem_size;
-
-        pipe_push(prod, elems, bytes_needed);
-        pipe_push(prod, (const char*)elems + bytes_needed, count - max_cap);
-        return;
-    }
+    size_t elem_size = p->elem_size;
+    size_t max_cap   = p->max_cap;
 
     size_t elems_pushed = 0;
 
     WHILE_LOCKED(
+        size_t elem_count        = p->elem_count;
+        size_t consumer_refcount = p->consumer_refcount;
+
         // Wait for there to be enough room in the buffer for some new elements.
-        while(p->elem_count == max_cap && p->consumer_refcount > 0)
+        for(; elem_count == max_cap && consumer_refcount > 0;
+              elem_count        = p->elem_count,
+              consumer_refcount = p->consumer_refcount)
             pthread_cond_wait(&p->just_popped, &p->m);
 
         // Don't perform an actual push if we have no consumers issued. The
         // buffer's been freed.
-        if(p->consumer_refcount == 0)
+        if(consumer_refcount == 0)
             return unlock_pipe(p);
 
         // Push as many elements into the queue as possible.
         push_without_locking(p, elems,
-            elems_pushed = min(count, max_cap - p->elem_count)
+            elems_pushed = min(count, max_cap - elem_count)
         );
 
         assert(elems_pushed > 0);
@@ -529,8 +522,9 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
 
     // now get the rest of the elements, which we didn't have enough room for
     // in the pipe.
-    size_t elems_left = count - elems_pushed;
-    pipe_push(prod, (const char*)elems + elems_pushed*p->elem_size, elems_left);
+    return pipe_push(prod,
+                     (const char*)elems + elems_pushed * elem_size,
+                     count - elems_pushed);
 }
 
 // wow, I didn't even intend for the name to work like that...
@@ -589,17 +583,21 @@ size_t pipe_pop(consumer_t* c, void* target, size_t count)
     assert(target && "Why are we trying to pop elements out of a pipe and into a NULL buffer?");
     assert(p);
 
-    if(count > p->max_cap)
-        count = p->max_cap;
+    size_t max_cap = p->max_cap;
+
+    if(count > max_cap)
+        count = max_cap;
 
     size_t ret;
 
     WHILE_LOCKED(
+        size_t elem_count;
+
         // While we need more elements and there exists at least one producer...
-        while(p->elem_count < count && p->producer_refcount > 0)
+        while((elem_count = p->elem_count) < count && p->producer_refcount > 0)
             pthread_cond_wait(&p->just_pushed, &p->m);
 
-        ret = p->elem_count > 0
+        ret = elem_count > 0
               ? pop_without_locking(p, target, count)
               : 0;
     );
@@ -617,10 +615,12 @@ void pipe_reserve(pipe_t* p, size_t count)
     if(count == 0)
         count = DEFAULT_MINCAP;
 
+    size_t max_cap = p->max_cap;
+
     WHILE_LOCKED(
         if(count > p->elem_count)
         {
-            p->min_cap = min(count, p->max_cap);
+            p->min_cap = min(count, max_cap);
             resize_buffer(p, count);
         }
     );
