@@ -4,7 +4,7 @@ OBJS=main.c pipe.c pipe_test.c
 NAME=pipe
 
 CFLAGS=-Wall -fstrict-aliasing -std=c99 -pthread -DFORTIFY_SOURCE=1
-D_CFLAGS=-DDEBUG
+D_CFLAGS=-DDEBUG -g
 R_CFLAGS=-DNDEBUG -O3
 
 all: pipe_debug pipe_release
