@@ -94,6 +94,19 @@ DEF_TEST(basic_storage)
     pipe_consumer_free(c);
 }
 
+/*
+ * TEST IDEAS:
+ *
+ * - Create a fuzzer. Output random seed at program start (allow seed to be
+ *   passed as a parameter). Put random amounts (and values) of data in one end
+ *   of the queue, have some algorithm processing it. Do this whole bunches. If
+ *   shit goes south, we can restart the program with the random seed and get a
+ *   reproducable thing. Or get core dumps. Whichever is easier. Do something
+ *   simple like randomly putting in every number from 1-10000, then ensuring
+ *   that all the numbers are recieved on the other end, even with multiple
+ *   consumers (and possibly multiple producers).
+ */
+
 #define RUN_TEST(name) \
     do { test_##name(); printf("%s -> [  OK  ]\n", #name); } while(0)
 
