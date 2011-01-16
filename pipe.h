@@ -153,6 +153,51 @@ size_t pipe_pop(consumer_t* p, void* target, size_t count);
 // default, set count to 0.
 void pipe_reserve(pipe_t* p, size_t count);
 
+// A function that can be used for processing a pipe.
+//
+// elem_in  - an array of elements to process
+// count    - the number of elements in `elem_in'
+// elem_out - The producer that may be pushed into to continue the chain
+// aux      - auxilary data previously passed to pipe_connect.
+typedef void (*pipe_processor_t)(const void* /* elem_in */,
+                                 size_t      /* count */,
+                                 producer_t* /* elem_out */,
+                                 const void* /* aux */
+                                );
+
+typedef struct {
+    producer_t* p;
+    consumer_t* c;
+} pipeline_t;
+
+// A pipeline consists of a list of functions and pipes. As data is recieved in
+// one end, it is processed by each of the pipes and pushed into the other end.
+// Each stage's processing is done in a seperate thread. The last parameter must
+// be NULL (in place of a pipe_processor_t) if you want to have a consumer_t
+// returned, or 0 (in place of a sizeof()) if you don't need or want a consumer_t.
+// If the last parameter replaces a sizeof(), the return value's `c' member will
+// be NULL.
+//
+// Sample:
+//  pipeline_t p = pipeline_new(aux, sizeof(int), &int_to_float, sizeof(float),
+//                              &float_to_garbage, sizeof(garbage),
+//                              &garbage_to_awesome, sizeof(awesome),
+//                              NULL
+//                             );
+//
+//  /* Now push all your ints into p.p ... */
+//
+//  pipe_producer_free(p.p);
+//
+//  /* Now pop all your awesome out of p.c ... */
+//
+//  pipe_consumer_free(p.c);
+//
+//  NOTE: All the functions must be of type pipe_processor_t. This call will
+//  return a pipeline which takes the first vararg and returns the last vararg
+//  (or NULL if the last vararg was a function).
+pipeline_t pipe_pipeline(const void* aux, ...);
+
 // Use this to run the pipe self-test. It will call abort() if anything is
 // wrong. This is usually unnecessary. If this is never called, pipe_test.c
 // does not need to be linked.

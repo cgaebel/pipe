@@ -25,6 +25,7 @@
 #include <assert.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -172,7 +173,7 @@ static inline char* wrap_if_at_end(char* p, char* begin, const char* end)
     return p == end ? begin : p;
 }
 
-static inline size_t next_pow2(size_t n)
+static size_t next_pow2(size_t n)
 {
     // I don't see why we would even try. Maybe a stacktrace will help.
     assert(n != 0);
@@ -652,10 +653,99 @@ void pipe_reserve(pipe_t* p, size_t count)
     size_t max_cap = p->max_cap;
 
     WHILE_LOCKED(
-        if(count > p->elem_count)
-        {
-            p->min_cap = min(count, max_cap);
-            resize_buffer(p, count);
-        }
+        if(count <= p->elem_count)
+            return unlock_pipe(p);
+
+        p->min_cap = min(count, max_cap);
+        resize_buffer(p, count);
     );
+}
+
+// How many elements will we process at once?
+#define BUFFER_SIZE     32
+
+typedef struct {
+    consumer_t* in;
+    pipe_processor_t proc;
+    const void* aux;
+    producer_t* out;
+} connect_data_t;
+
+static void* process_pipe(void* param)
+{
+    connect_data_t p = *(connect_data_t*)param;
+    free(param);
+
+    char buf[BUFFER_SIZE * PIPIFY(p.in)->elem_size];
+    size_t bytes_read;
+
+    while((bytes_read = pipe_pop(p.in, buf, BUFFER_SIZE)))
+        p.proc(buf, bytes_read, p.out, p.aux);
+
+    pipe_consumer_free(p.in);
+    pipe_producer_free(p.out);
+
+    pthread_exit(0);
+}
+
+static void pipe_connect(consumer_t* in, pipe_processor_t proc, const void* aux, producer_t* out)
+{
+    connect_data_t* d = malloc(sizeof(connect_data_t));
+    d->in = in;
+    d->proc = proc;
+    d->aux = aux;
+    d->out = out;
+
+    pthread_t t;
+
+    pthread_create(&t, NULL, &process_pipe, d);
+}
+
+pipeline_t pipe_pipeline(const void* aux, ...)
+{
+    va_list va;
+    va_start(va, aux);
+
+    pipeline_t ret;
+    consumer_t* last_pipe = NULL;
+
+    // Create our first pipe.
+    {
+        pipe_t* p = pipe_new(va_arg(va, size_t), 0);
+        ret.p = pipe_producer_new(p);
+        last_pipe = pipe_consumer_new(p);
+        pipe_free(p);
+    }
+
+    // Now create the rest.
+    for(pipe_processor_t proc = va_arg(va, pipe_processor_t);
+        proc != NULL;
+        proc = va_arg(va, pipe_processor_t))
+    {
+        size_t pipe_size = va_arg(va, size_t);
+
+        if(pipe_size == 0)
+        {
+            pipe_consumer_free(last_pipe);
+            last_pipe = NULL;
+            break;
+        }
+
+        pipe_t* pipe = pipe_new(pipe_size, 0);
+        producer_t* in = pipe_producer_new(pipe);
+
+        pipe_connect(last_pipe, proc, aux, in);
+        pipe_producer_free(in);
+
+        pipe_consumer_free(last_pipe);
+        last_pipe = pipe_consumer_new(pipe);
+
+        pipe_free(pipe);
+    }
+
+    va_end(va);
+
+    ret.c = last_pipe;
+
+    return ret;
 }
