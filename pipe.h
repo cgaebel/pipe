@@ -162,7 +162,7 @@ void pipe_reserve(pipe_t* p, size_t count);
 typedef void (*pipe_processor_t)(const void* /* elem_in */,
                                  size_t      /* count */,
                                  producer_t* /* elem_out */,
-                                 const void* /* aux */
+                                 void*       /* aux */
                                 );
 
 typedef struct {
@@ -179,11 +179,11 @@ typedef struct {
 // be NULL.
 //
 // Sample:
-//  pipeline_t p = pipeline_new(aux, sizeof(int), &int_to_float, sizeof(float),
-//                              &float_to_garbage, sizeof(garbage),
-//                              &garbage_to_awesome, sizeof(awesome),
-//                              NULL
-//                             );
+//  pipeline_t p = pipe_pipeline(aux, sizeof(int), &int_to_float, sizeof(float),
+//                               &float_to_garbage, sizeof(garbage),
+//                               &garbage_to_awesome, sizeof(awesome),
+//                               NULL
+//                              );
 //
 //  /* Now push all your ints into p.p ... */
 //
@@ -196,7 +196,7 @@ typedef struct {
 //  NOTE: All the functions must be of type pipe_processor_t. This call will
 //  return a pipeline which takes the first vararg and returns the last vararg
 //  (or NULL if the last vararg was a function).
-pipeline_t pipe_pipeline(const void* aux, ...);
+pipeline_t pipe_pipeline(size_t first_size, ...);
 
 // Use this to run the pipe self-test. It will call abort() if anything is
 // wrong. This is usually unnecessary. If this is never called, pipe_test.c

@@ -3,19 +3,17 @@ CC=gcc
 OBJS=main.c pipe.c pipe_test.c
 NAME=pipe
 
-CFLAGS=-Wall -fstrict-aliasing -std=c99 -pthread -DFORTIFY_SOURCE=1
-D_CFLAGS=-DDEBUG -g
-R_CFLAGS=-DNDEBUG -O3
+CFLAGS=-Wall -Wpointer-arith -fstrict-aliasing -std=c99 -pthread -DFORTIFY_SOURCE=2 -Werror
+D_CFLAGS=-DDEBUG -g -O0
+R_CFLAGS=-DNDEBUG -O3 -flto
 
 all: pipe_debug pipe_release
 
 pipe_debug: $(OBJS)
 	$(CC) $(CFLAGS)  $(D_CFLAGS) -o pipe_debug $(OBJS)
-	valgrind ./pipe_debug
 
 pipe_release: $(OBJS)
 	$(CC) $(CFLAGS)  $(R_CFLAGS) -o pipe_release $(OBJS)
-	valgrind ./pipe_release
 
 pipe.h:
 
@@ -27,8 +25,10 @@ pipe_test.c: pipe.h
 
 .PHONY : clean analyze
 
-analyze: $(OBJS)
+analyze: $(OBJS) pipe_debug pipe_release
 	clang --analyze $(CFLAGS) $(OBJS)
+	valgrind ./pipe_debug
+	valgrind ./pipe_release
 
 clean:
 	rm -f *.plist pipe_debug pipe_release

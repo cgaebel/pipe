@@ -94,6 +94,69 @@ DEF_TEST(basic_storage)
     pipe_consumer_free(c);
 }
 
+typedef struct {
+    int orig;
+    int new;
+} testdata_t;
+
+static void double_elems(const void* elems, size_t count, producer_t* out, void* aux)
+{
+    testdata_t outbuffer[count];
+
+    memcpy(outbuffer, elems, count*sizeof(testdata_t));
+
+    for(size_t i = 0; i < count; ++i)
+        outbuffer[i].new *= 2;
+
+    pipe_push(out, outbuffer, count);
+}
+
+#define MAX_NUM     500000
+
+static void generate_test_data(producer_t* p)
+{
+    for(int i = 0; i < MAX_NUM; ++i)
+    {
+        testdata_t t = { i, i };
+        pipe_push(p, &t, 1);
+    }
+}
+
+static inline void validate_test_data(testdata_t t)
+{
+    assert(t.new == t.orig*256);
+}
+
+static void validate_consumer(consumer_t* c)
+{
+    testdata_t t;
+
+    while(pipe_pop(c, &t, 1))
+        validate_test_data(t);
+}
+
+DEF_TEST(pipeline_multiplier)
+{
+    pipeline_t pipeline =
+        pipe_pipeline(sizeof(testdata_t),
+                      &double_elems, NULL, sizeof(testdata_t),
+                      &double_elems, NULL, sizeof(testdata_t),
+                      &double_elems, NULL, sizeof(testdata_t),
+                      &double_elems, NULL, sizeof(testdata_t),
+                      &double_elems, NULL, sizeof(testdata_t),
+                      &double_elems, NULL, sizeof(testdata_t),
+                      &double_elems, NULL, sizeof(testdata_t),
+                      &double_elems, NULL, sizeof(testdata_t),
+                      NULL
+                     );
+
+    assert(pipeline.p);
+    assert(pipeline.c);
+
+    generate_test_data(pipeline.p); pipe_producer_free(pipeline.p);
+    validate_consumer(pipeline.c);  pipe_consumer_free(pipeline.c);
+}
+
 /*
  * TEST IDEAS:
  *
@@ -113,4 +176,5 @@ DEF_TEST(basic_storage)
 void pipe_run_test_suite()
 {
     RUN_TEST(basic_storage);
+    RUN_TEST(pipeline_multiplier);
 }

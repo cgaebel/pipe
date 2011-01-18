@@ -157,7 +157,7 @@ static inline void fix_bufend(pipe_t* p)
 //   false -> nowrap
 static inline bool wraps_around(const pipe_t* p)
 {
-    return p->begin > p->end;
+    return p->begin >= p->end && p->elem_count > 0;
 }
 
 // Is the pointer `p' within [left, right]?
@@ -166,20 +166,14 @@ static inline bool in_bounds(const void* left, const void* p, const void* right)
     return p >= left && p <= right;
 }
 
-// Wraps the begin (and possibly end) pointers of p to the beginning of the
-// buffer if they've hit the end.
-static inline char* wrap_if_at_end(char* p, char* begin, const char* end)
-{
-    return p == end ? begin : p;
-}
-
 static size_t next_pow2(size_t n)
 {
     // I don't see why we would even try. Maybe a stacktrace will help.
     assert(n != 0);
 
-    size_t top = ~(size_t)0; // 1111111..
-    top = (top >> 1) + 1;    // 1000000..
+    // In binary, top is equal to 10000...0:  A 1 right-padded by as many zeros
+    // as needed to fill up a size_t.
+    size_t top = (~(size_t)0 >> 1) + 1;
 
     // If when we round up we will overflow our size_t, avoid rounding up and
     // exit early.
@@ -354,6 +348,12 @@ static inline void deallocate(pipe_t* p)
     free(p);
 }
 
+static inline void free_and_null(char** p)
+{
+    free(*p);
+    *p = NULL;
+}
+
 void pipe_free(pipe_t* p)
 {
     WHILE_LOCKED(
@@ -363,9 +363,15 @@ void pipe_free(pipe_t* p)
         --p->producer_refcount;
         --p->consumer_refcount;
 
+        if(p->consumer_refcount == 0)
+            free_and_null(&p->buffer);
+
         if(requires_deallocation(p))
             return deallocate(p);
     );
+
+    pthread_cond_broadcast(&p->just_pushed);
+    pthread_cond_broadcast(&p->just_popped);
 }
 
 void pipe_producer_free(producer_t* handle)
@@ -380,12 +386,8 @@ void pipe_producer_free(producer_t* handle)
         if(requires_deallocation(p))
             return deallocate(p);
     );
-}
 
-static inline void free_and_null(char** p)
-{
-    free(*p);
-    *p = NULL;
+    pthread_cond_broadcast(&p->just_pushed);
 }
 
 void pipe_consumer_free(consumer_t* handle)
@@ -405,6 +407,10 @@ void pipe_consumer_free(consumer_t* handle)
         if(requires_deallocation(p))
             return deallocate(p);
     );
+
+    // This just ensures any waiting pushers get woken up. We don't want them
+    // waiting forever for the last consumer out of the gate!
+    pthread_cond_broadcast(&p->just_popped);
 }
 
 // Returns the end of the buffer (buf + number_of_bytes_copied).
@@ -457,6 +463,7 @@ static void resize_buffer(pipe_t* p, size_t new_size)
 static inline void push_without_locking(pipe_t* p, const void* elems, size_t count)
 {
     check_invariants(p);
+    assert(count != 0);
 
     const size_t elem_count = p->elem_count,
                  elem_size  = p->elem_size;
@@ -481,19 +488,19 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     {
         size_t at_end = min(bytes_to_copy, bufend - end);
 
-        end = wrap_if_at_end(
-                     offset_memcpy(end, elems, at_end),
-                     p->buffer, bufend);
+        if(end == bufend) end = buffer;
+        end = offset_memcpy(end, elems, at_end);
 
         elems = (const char*)elems + at_end;
         bytes_to_copy -= at_end;
     }
 
     // Now copy any remaining data...
-    end = wrap_if_at_end(
-              offset_memcpy(end, elems, bytes_to_copy),
-              buffer, bufend
-          );
+    if(bytes_to_copy)
+    {
+        if(end == bufend) end = buffer;
+        end = offset_memcpy(end, elems, bytes_to_copy);
+    }
 
     // ...and update the end pointer and count!
     p->end         = end;
@@ -578,17 +585,29 @@ static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
         target = offset_memcpy(target, begin, first_bytes_to_copy);
 
         bytes_remaining -= first_bytes_to_copy;
-        begin            = wrap_if_at_end(
-                               begin + first_bytes_to_copy,
-                               buffer, bufend);
+        begin           += first_bytes_to_copy;
+
+        if(begin == bufend)
+        {
+            begin = buffer;
+            if(p->end == bufend)
+                p->end = buffer;
+        }
     }
 
     // If we're dealing with a wrap buffer, copy the remaining bytes
-    // [buffer, buffer + bytes_to_copy) into target.
+    // [buffer, buffer + bytes_remaining) into target.
     if(bytes_remaining > 0)
     {
         memcpy(target, buffer, bytes_remaining);
-        begin = wrap_if_at_end(begin + bytes_remaining, buffer, bufend);
+        begin += bytes_remaining;
+
+        if(begin == bufend)
+        {
+            begin = buffer;
+            if(p->end == bufend)
+                p->end = buffer;
+        }
     }
 
     // Since we cached begin on the stack, we need to reflect our changes back
@@ -667,20 +686,22 @@ void pipe_reserve(pipe_t* p, size_t count)
 typedef struct {
     consumer_t* in;
     pipe_processor_t proc;
-    const void* aux;
+    void* aux;
     producer_t* out;
 } connect_data_t;
 
 static void* process_pipe(void* param)
 {
-    connect_data_t p = *(connect_data_t*)param;
+    connect_data_t p;
+    memcpy(&p, param, sizeof(connect_data_t));
     free(param);
 
     char buf[BUFFER_SIZE * PIPIFY(p.in)->elem_size];
-    size_t bytes_read;
 
-    while((bytes_read = pipe_pop(p.in, buf, BUFFER_SIZE)))
-        p.proc(buf, bytes_read, p.out, p.aux);
+    size_t elems_read;
+
+    while((elems_read = pipe_pop(p.in, buf, BUFFER_SIZE)))
+        p.proc(buf, elems_read, p.out, p.aux);
 
     pipe_consumer_free(p.in);
     pipe_producer_free(p.out);
@@ -688,8 +709,12 @@ static void* process_pipe(void* param)
     pthread_exit(0);
 }
 
-static void pipe_connect(consumer_t* in, pipe_processor_t proc, const void* aux, producer_t* out)
+static void pipe_connect(consumer_t* in, pipe_processor_t proc, void* aux, producer_t* out)
 {
+    assert(in);
+    assert(out);
+    assert(proc);
+
     connect_data_t* d = malloc(sizeof(connect_data_t));
     d->in = in;
     d->proc = proc;
@@ -697,55 +722,54 @@ static void pipe_connect(consumer_t* in, pipe_processor_t proc, const void* aux,
     d->out = out;
 
     pthread_t t;
-
     pthread_create(&t, NULL, &process_pipe, d);
 }
 
-pipeline_t pipe_pipeline(const void* aux, ...)
+static pipeline_t pipe_pipeline_impl(pipeline_t result_so_far,
+                                     va_list args)
+{
+    pipe_processor_t proc = va_arg(args, pipe_processor_t);
+
+    if(proc == NULL)
+        return result_so_far;
+
+    void*  aux       = va_arg(args, void*);
+    size_t pipe_size = va_arg(args, size_t);
+
+    if(pipe_size == 0)
+    {
+        pipe_consumer_free(result_so_far.c);
+        result_so_far.c = NULL;
+        return result_so_far;
+    }
+
+    pipe_t* pipe = pipe_new(pipe_size, 0);
+
+    pipe_connect(result_so_far.c, proc, aux, pipe_producer_new(pipe));
+    result_so_far.c = pipe_consumer_new(pipe);
+
+    pipe_free(pipe);
+
+    return pipe_pipeline_impl(result_so_far, args);
+}
+
+pipeline_t pipe_pipeline(size_t first_size, ...)
 {
     va_list va;
-    va_start(va, aux);
+    va_start(va, first_size);
 
-    pipeline_t ret;
-    consumer_t* last_pipe = NULL;
+    pipe_t* p = pipe_new(first_size, 0);
 
-    // Create our first pipe.
-    {
-        pipe_t* p = pipe_new(va_arg(va, size_t), 0);
-        ret.p = pipe_producer_new(p);
-        last_pipe = pipe_consumer_new(p);
-        pipe_free(p);
-    }
+    pipeline_t ret = {
+        .p = pipe_producer_new(p),
+        .c = pipe_consumer_new(p)
+    };
 
-    // Now create the rest.
-    for(pipe_processor_t proc = va_arg(va, pipe_processor_t);
-        proc != NULL;
-        proc = va_arg(va, pipe_processor_t))
-    {
-        size_t pipe_size = va_arg(va, size_t);
+    pipe_free(p);
 
-        if(pipe_size == 0)
-        {
-            pipe_consumer_free(last_pipe);
-            last_pipe = NULL;
-            break;
-        }
-
-        pipe_t* pipe = pipe_new(pipe_size, 0);
-        producer_t* in = pipe_producer_new(pipe);
-
-        pipe_connect(last_pipe, proc, aux, in);
-        pipe_producer_free(in);
-
-        pipe_consumer_free(last_pipe);
-        last_pipe = pipe_consumer_new(pipe);
-
-        pipe_free(pipe);
-    }
+    ret = pipe_pipeline_impl(ret, va);
 
     va_end(va);
-
-    ret.c = last_pipe;
 
     return ret;
 }
