@@ -179,7 +179,8 @@ typedef struct {
 // be NULL.
 //
 // Sample:
-//  pipeline_t p = pipe_pipeline(aux, sizeof(int), &int_to_float, sizeof(float),
+//  pipeline_t p = pipe_pipeline(sizeof(int),
+//                               &int_to_float, sizeof(float),
 //                               &float_to_garbage, sizeof(garbage),
 //                               &garbage_to_awesome, sizeof(awesome),
 //                               NULL
@@ -194,8 +195,9 @@ typedef struct {
 //  pipe_consumer_free(p.c);
 //
 //  NOTE: All the functions must be of type pipe_processor_t. This call will
-//  return a pipeline which takes the first vararg and returns the last vararg
-//  (or NULL if the last vararg was a function).
+//  return a pipeline which takes the type specified by the first parameter
+//  [int] and returns the last type [awesome] (or NULL if the last vararg was a
+//  function).
 pipeline_t pipe_pipeline(size_t first_size, ...);
 
 // Use this to run the pipe self-test. It will call abort() if anything is
