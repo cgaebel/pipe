@@ -3,9 +3,9 @@ CC=gcc
 OBJS=main.c pipe.c pipe_test.c
 NAME=pipe
 
-CFLAGS=-Wall -Wpointer-arith -fstrict-aliasing -std=c99 -pthread -DFORTIFY_SOURCE=2 -Werror
+CFLAGS=-Wall -Wpointer-arith -fstrict-aliasing -std=c99 -pthread -DFORTIFY_SOURCE=2 -pipe -Werror
 D_CFLAGS=-DDEBUG -g -O0
-R_CFLAGS=-DNDEBUG -O3 -flto
+R_CFLAGS=-DNDEBUG -O3 -flto -fomit-frame-pointer -funroll-loops
 
 all: pipe_debug pipe_release
 
