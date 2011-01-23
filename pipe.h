@@ -23,6 +23,10 @@
 #pragma once
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
 * A pipe is a collection of elements, enqueued and dequeued in a FIFO pattern.
 * The beauty of it lies in that pushing and popping may be done in multiple
@@ -115,23 +119,23 @@ pipe_t* pipe_new(size_t elem_size, size_t limit);
 
 // Makes a production handle to the pipe, allowing push operations. This
 // function is extremely cheap: it doesn't allocate memory.
-producer_t* pipe_producer_new(pipe_t* p);
+producer_t* pipe_producer_new(pipe_t*);
 
 // Makes a consumption handle to the pipe, allowing pop operations. This
 // function is extremely cheap: it doesn't allocate memory.
-consumer_t* pipe_consumer_new(pipe_t* p);
+consumer_t* pipe_consumer_new(pipe_t*);
 
 /*
 * If you call *_new, you must call the corresponding *_free. Failure to do so
 * may result in resource leaks, undefined behavior, and spontaneous combustion.
 */
 
-void pipe_free(pipe_t* p);
-void pipe_producer_free(producer_t* p);
-void pipe_consumer_free(consumer_t* p);
+void pipe_free(pipe_t*);
+void pipe_producer_free(producer_t*);
+void pipe_consumer_free(consumer_t*);
 
 // Copies `count' elements from `elems' into the pipe.
-void pipe_push(producer_t* p, const void* elems, size_t count);
+void pipe_push(producer_t*, const void* elems, size_t count);
 
 // Tries to pop `count' elements out of the pipe and into `target', returning
 // the number of elements successfully copied. If there aren't at least `count'
@@ -143,7 +147,7 @@ void pipe_push(producer_t* p, const void* elems, size_t count);
 //
 // If this function returns 0, there will be no more elements coming in. Every
 // subsequent call will return 0.
-size_t pipe_pop(consumer_t* p, void* target, size_t count);
+size_t pipe_pop(consumer_t*, void* target, size_t count);
 
 // Modifies the pipe to have room for at least `count' elements. If more room
 // is already allocated, the call does nothing. This can be useful if requests
@@ -151,7 +155,7 @@ size_t pipe_pop(consumer_t* p, void* target, size_t count);
 //
 // The default minimum is 32 elements. To reset the reservation size to the
 // default, set count to 0.
-void pipe_reserve(pipe_t* p, size_t count);
+void pipe_reserve(pipe_t*, size_t count);
 
 // A function that can be used for processing a pipe.
 //
@@ -174,16 +178,21 @@ typedef struct {
 // one end, it is processed by each of the pipes and pushed into the other end.
 // Each stage's processing is done in a seperate thread. The last parameter must
 // be NULL (in place of a pipe_processor_t) if you want to have a consumer_t
-// returned, or 0 (in place of a sizeof()) if you don't need or want a consumer_t.
+// returned, or 0 (in place of a sizeof()) if you don't want or need a consumer_t.
 // If the last parameter replaces a sizeof(), the return value's `c' member will
 // be NULL.
 //
+// When passing NULL `aux' pointers to your functors, you MUST cast them to
+// void* to maintain 64-bit compatibility. The C standard only requires NULL to
+// be defined as 0, so will be cast to a 32-bit wide int. This will destroy
+// alignment since pipe_pipeline looks for a void* in that space.
+//
 // Sample:
 //  pipeline_t p = pipe_pipeline(sizeof(int),
-//                               &int_to_float, sizeof(float),
-//                               &float_to_garbage, sizeof(garbage),
-//                               &garbage_to_awesome, sizeof(awesome),
-//                               NULL
+//                               &int_to_float,       &i2f_data,   sizeof(float),
+//                               &float_to_garbage,   &f2g_data,   sizeof(garbage),
+//                               &garbage_to_awesome, (void*)NULL, sizeof(awesome),
+//                               (void*)NULL
 //                              );
 //
 //  /* Now push all your ints into p.p ... */
@@ -204,3 +213,7 @@ pipeline_t pipe_pipeline(size_t first_size, ...);
 // wrong. This is usually unnecessary. If this is never called, pipe_test.c
 // does not need to be linked.
 void pipe_run_test_suite();
+
+#ifdef __cplusplus
+}
+#endif

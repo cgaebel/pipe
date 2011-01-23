@@ -111,7 +111,7 @@ static void double_elems(const void* elems, size_t count, producer_t* out, void*
     pipe_push(out, outbuffer, count);
 }
 
-#define MAX_NUM     500000
+#define MAX_NUM     1000000000
 
 static void generate_test_data(producer_t* p)
 {
@@ -139,15 +139,15 @@ DEF_TEST(pipeline_multiplier)
 {
     pipeline_t pipeline =
         pipe_pipeline(sizeof(testdata_t),
-                      &double_elems, NULL, sizeof(testdata_t),
-                      &double_elems, NULL, sizeof(testdata_t),
-                      &double_elems, NULL, sizeof(testdata_t),
-                      &double_elems, NULL, sizeof(testdata_t),
-                      &double_elems, NULL, sizeof(testdata_t),
-                      &double_elems, NULL, sizeof(testdata_t),
-                      &double_elems, NULL, sizeof(testdata_t),
-                      &double_elems, NULL, sizeof(testdata_t),
-                      NULL
+                      &double_elems, (void*)NULL, sizeof(testdata_t),
+                      &double_elems, (void*)NULL, sizeof(testdata_t),
+                      &double_elems, (void*)NULL, sizeof(testdata_t),
+                      &double_elems, (void*)NULL, sizeof(testdata_t),
+                      &double_elems, (void*)NULL, sizeof(testdata_t),
+                      &double_elems, (void*)NULL, sizeof(testdata_t),
+                      &double_elems, (void*)NULL, sizeof(testdata_t),
+                      &double_elems, (void*)NULL, sizeof(testdata_t),
+                      (void*)NULL
                      );
 
     assert(pipeline.p);

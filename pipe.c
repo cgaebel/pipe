@@ -348,10 +348,10 @@ static inline void deallocate(pipe_t* p)
     free(p);
 }
 
-static inline void free_and_null(char** p)
+static inline void* x_free(char* p)
 {
-    free(*p);
-    *p = NULL;
+    free(p);
+    return NULL;
 }
 
 void pipe_free(pipe_t* p)
@@ -364,7 +364,7 @@ void pipe_free(pipe_t* p)
         --p->consumer_refcount;
 
         if(p->consumer_refcount == 0)
-            free_and_null(&p->buffer);
+            p->buffer = x_free(p->buffer);
 
         if(requires_deallocation(p))
             return deallocate(p);
@@ -402,7 +402,7 @@ void pipe_consumer_free(consumer_t* handle)
         // If this was the last consumer out of the gate, we can deallocate the
         // buffer. It has no use anymore.
         if(p->consumer_refcount == 0)
-            free_and_null(&p->buffer);
+            p->buffer = x_free(p->buffer);
 
         if(requires_deallocation(p))
             return deallocate(p);
