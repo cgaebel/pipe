@@ -178,3 +178,5 @@ void pipe_run_test_suite()
     RUN_TEST(basic_storage);
     RUN_TEST(pipeline_multiplier);
 }
+
+/* vim: set et ts=4 sw=4 softtabstop=4 textwidth=80: */

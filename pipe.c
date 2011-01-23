@@ -337,6 +337,9 @@ static inline bool requires_deallocation(const pipe_t* p)
 
 static inline void deallocate(pipe_t* p)
 {
+    assert(p->producer_refcount == 0);
+    assert(p->consumer_refcount == 0);
+
     pthread_mutex_unlock(&p->m);
 
     pthread_mutex_destroy(&p->m);
@@ -773,3 +776,5 @@ pipeline_t pipe_pipeline(size_t first_size, ...)
 
     return ret;
 }
+
+/* vim: set et ts=4 sw=4 softtabstop=4 textwidth=80: */
