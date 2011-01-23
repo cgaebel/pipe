@@ -79,13 +79,13 @@ extern "C" {
 *
 * void do_stuff(consumer_t* p)
 * {
-* int buf[BUFSIZE];
-* size_t bytes_read;
+*   int buf[BUFSIZE];
+*   size_t bytes_read;
 *
-* while((bytes_read = pipe_pop(p, buf, BUFSIZE)))
-* process(buf, bytes_read);
+*   while((bytes_read = pipe_pop(p, buf, BUFSIZE)))
+*   process(buf, bytes_read);
 *
-* pipe_consumer_free(p);
+*   pipe_consumer_free(p);
 * }
 *
 * Try and keep the pipe_t allocated for as short a time as possible. This
