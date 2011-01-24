@@ -1,4 +1,4 @@
-/**
+/*
  * The MIT License
  * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
  * 
@@ -37,6 +37,14 @@
 
 #ifndef max
 #define max(a, b) ((a) >= (b) ? (a) : (b))
+#endif
+
+#ifdef __GNUC__
+#define likely(cond)   __builtin_expect(!!(cond), 1)
+#define unlikely(cond) __builtin_expect(!!(cond), 0)
+#else
+#define likely(cond)   (cond)
+#define unlikely(cond) (cond)
 #endif
 
 // Runs a memcpy, then returns the end of the range copied.
@@ -131,11 +139,12 @@ struct pipe {
 };
 
 // Poor man's typedef. For more information, see DEF_NEW_FUNC's typedef.
-struct producer { pipe_t pipe; };
-struct consumer { pipe_t pipe; };
+struct producer {};
+struct consumer {};
+struct pipe_generic {};
 
 // Converts a pointer to either a producer or consumer into a suitable pipe_t*.
-#define PIPIFY(producer_or_consumer) (&(producer_or_consumer)->pipe)
+#define PIPIFY(producer_or_consumer) ((pipe_t*)(producer_or_consumer))
 
 // The initial minimum capacity of the pipe. This can be overridden dynamically
 // with pipe_reserve.
@@ -160,6 +169,8 @@ static inline bool wraps_around(const pipe_t* p)
     return p->begin >= p->end && p->elem_count > 0;
 }
 
+#define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
+
 // Is the pointer `p' within [left, right]?
 static inline bool in_bounds(const void* left, const void* p, const void* right)
 {
@@ -177,12 +188,13 @@ static size_t next_pow2(size_t n)
 
     // If when we round up we will overflow our size_t, avoid rounding up and
     // exit early.
-    if(n >= top)
+    if(unlikely(n >= top))
         return n;
 
     // Therefore, at this point we have something that can be rounded up.
-    // http://bits.stephan-brumme.com/roundUpToNextPowerOfTwo.html
 
+    // We'll use the algorithm documented at:
+    //   http://bits.stephan-brumme.com/roundUpToNextPowerOfTwo.html
     n--;
 
     for(size_t shift = 1; shift < sizeof(size_t)*CHAR_BIT; shift <<= 1)
@@ -275,31 +287,27 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
 {
     assert(elem_size != 0);
 
-    assert(sizeof(pipe_t) == sizeof(consumer_t));
-    assert(sizeof(consumer_t) == sizeof(producer_t));
-
     pipe_t* p = malloc(sizeof(pipe_t));
 
-    if(p == NULL)
-        return p;
+    *p = (pipe_t) {
+        .elem_size  = elem_size,
+        .elem_count = 0,
+        .capacity = DEFAULT_MINCAP,
+        .min_cap = DEFAULT_MINCAP,
+        .max_cap = limit ? next_pow2(max(limit, DEFAULT_MINCAP)) : ~(size_t)0,
 
-    p->elem_size = elem_size;
-    p->elem_count = 0;
-    p->capacity =
-    p->min_cap  = DEFAULT_MINCAP;
-    p->max_cap  = limit ? next_pow2(max(limit, p->min_cap)) : ~(size_t)0;
+        // Since we're issuing a pipe_t, it counts as both a producer and a
+        // consumer since it can issue new instances of both. Therefore, the
+        // refcounts both start at 1; not the intuitive 0.
+        .producer_refcount = 1,
+        .consumer_refcount = 1
+    };
 
     p->buffer =
     p->begin  =
     p->end    = malloc(p->elem_size * p->capacity);
 
     fix_bufend(p);
-
-    p->producer_refcount =
-    p->consumer_refcount = 1;    // Since we're issuing a pipe_t, it counts as both
-                                 // a pusher and a popper since it can issue
-                                 // new instances of both. Therefore, the count of
-                                 // both starts at 1 - not the intuitive 0.
 
     init_mutex(&p->m);
 
@@ -366,10 +374,10 @@ void pipe_free(pipe_t* p)
         --p->producer_refcount;
         --p->consumer_refcount;
 
-        if(p->consumer_refcount == 0)
+        if(unlikely(p->consumer_refcount == 0))
             p->buffer = x_free(p->buffer);
 
-        if(requires_deallocation(p))
+        if(unlikely(requires_deallocation(p)))
             return deallocate(p);
     );
 
@@ -386,7 +394,7 @@ void pipe_producer_free(producer_t* handle)
 
         --p->producer_refcount;
 
-        if(requires_deallocation(p))
+        if(unlikely(requires_deallocation(p)))
             return deallocate(p);
     );
 
@@ -404,10 +412,10 @@ void pipe_consumer_free(consumer_t* handle)
 
         // If this was the last consumer out of the gate, we can deallocate the
         // buffer. It has no use anymore.
-        if(p->consumer_refcount == 0)
+        if(unlikely(p->consumer_refcount == 0))
             p->buffer = x_free(p->buffer);
 
-        if(requires_deallocation(p))
+        if(unlikely(requires_deallocation(p)))
             return deallocate(p);
     );
 
@@ -491,7 +499,7 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     {
         size_t at_end = min(bytes_to_copy, bufend - end);
 
-        if(end == bufend) end = buffer;
+        WRAP_PTR_IF_NECESSARY(end);
         end = offset_memcpy(end, elems, at_end);
 
         elems = (const char*)elems + at_end;
@@ -501,7 +509,7 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     // Now copy any remaining data...
     if(bytes_to_copy)
     {
-        if(end == bufend) end = buffer;
+        WRAP_PTR_IF_NECESSARY(end);
         end = offset_memcpy(end, elems, bytes_to_copy);
     }
 
@@ -539,7 +547,7 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
 
         // Don't perform an actual push if we have no consumers issued. The
         // buffer's been freed.
-        if(consumer_refcount == 0)
+        if(unlikely(consumer_refcount == 0))
             return unlock_pipe(p);
 
         // Push as many elements into the queue as possible.
@@ -590,28 +598,21 @@ static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
         bytes_remaining -= first_bytes_to_copy;
         begin           += first_bytes_to_copy;
 
-        if(begin == bufend)
-        {
-            begin = buffer;
-            if(p->end == bufend)
-                p->end = buffer;
-        }
+        WRAP_PTR_IF_NECESSARY(begin);
     }
 
-    // If we're dealing with a wrap buffer, copy the remaining bytes
-    // [buffer, buffer + bytes_remaining) into target.
     if(bytes_remaining > 0)
     {
         memcpy(target, buffer, bytes_remaining);
         begin += bytes_remaining;
 
-        if(begin == bufend)
-        {
-            begin = buffer;
-            if(p->end == bufend)
-                p->end = buffer;
-        }
+        WRAP_PTR_IF_NECESSARY(begin);
     }
+
+    // This accounts for the odd case where the begin pointer wrapped around and
+    // the end pointer didn't follow it.
+    if(elem_count == 0)
+        p->end = begin;
 
     // Since we cached begin on the stack, we need to reflect our changes back
     // on the pipe.
@@ -633,39 +634,49 @@ static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
     return elems_to_copy;
 }
 
-size_t pipe_pop(consumer_t* c, void* target, size_t count)
+size_t pipe_pop(consumer_t* c, void* target, size_t requested)
 {
     pipe_t* p = PIPIFY(c);
 
     assert(target && "Why are we trying to pop elements out of a pipe and into a NULL buffer?");
     assert(p);
 
-    size_t max_cap = p->max_cap;
+    if(requested == 0)
+        return 0;
 
-    if(count > max_cap)
-        count = max_cap;
+    const size_t max_cap   = p->max_cap;
+    const size_t elem_size = p->elem_size;
 
-    size_t ret;
+    size_t popped;
 
     WHILE_LOCKED(
         size_t elem_count;
 
         // While we need more elements and there exists at least one producer...
-        while((elem_count = p->elem_count) < count && p->producer_refcount > 0)
+        while((elem_count = p->elem_count) < min(requested, max_cap) && p->producer_refcount > 0)
             pthread_cond_wait(&p->just_pushed, &p->m);
 
-        ret = elem_count > 0
-              ? pop_without_locking(p, target, count)
-              : 0;
+        popped = elem_count > 0
+                 ? pop_without_locking(p, target, min(requested, elem_count))
+                 : 0;
     );
 
     pthread_cond_broadcast(&p->just_popped);
 
-    return ret;
+    if(popped == 0)
+        return 0;
+
+    return popped + pipe_pop(c, (char*)target + popped*elem_size, requested - popped);
 }
 
-void pipe_reserve(pipe_t* p, size_t count)
+size_t pipe_elem_size(pipe_generic_t* p)
 {
+    return PIPIFY(p)->elem_size;
+}
+
+void pipe_reserve(pipe_generic_t* gen, size_t count)
+{
+    pipe_t* p = PIPIFY(gen);
     if(p == NULL)
         return;
 
@@ -695,8 +706,7 @@ typedef struct {
 
 static void* process_pipe(void* param)
 {
-    connect_data_t p;
-    memcpy(&p, param, sizeof(connect_data_t));
+    connect_data_t p = *(connect_data_t*)param;
     free(param);
 
     char buf[BUFFER_SIZE * PIPIFY(p.in)->elem_size];
@@ -719,10 +729,13 @@ static void pipe_connect(consumer_t* in, pipe_processor_t proc, void* aux, produ
     assert(proc);
 
     connect_data_t* d = malloc(sizeof(connect_data_t));
-    d->in = in;
-    d->proc = proc;
-    d->aux = aux;
-    d->out = out;
+
+    *d = (connect_data_t) {
+        .in = in,
+        .proc = proc,
+        .aux = aux,
+        .out = out
+    };
 
     pthread_t t;
     pthread_create(&t, NULL, &process_pipe, d);

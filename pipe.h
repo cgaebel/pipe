@@ -27,6 +27,12 @@
 extern "C" {
 #endif
 
+#ifdef __GNUC__
+#define PURE __attribute__((pure))
+#else
+#define PURE
+#endif
+
 /*
  * A pipe is a collection of elements, enqueued and dequeued in a FIFO pattern.
  * The beauty of it lies in that pushing and popping may be done in multiple
@@ -90,7 +96,7 @@ extern "C" {
  *   size_t bytes_read;
  *
  *   while((bytes_read = pipe_pop(p, buf, BUFSIZE)))
- *   process(buf, bytes_read);
+ *     process(buf, bytes_read);
  *
  *   pipe_consumer_free(p);
  * }
@@ -99,6 +105,13 @@ extern "C" {
  * means you should make all your producer and consumer handles at the start,
  * deallocate the pipe_t, then use producers and consumers for the duration
  * of your task.
+ *
+ * pipe_generic_t
+ *
+ * Generic pipe pointers can be created from pipe_t's, producer_t's, or
+ * consumer_t's with the PIPE_GENERIC macro. This new pointer can then be used
+ * as a parameter to any function requiring it, allowing certain operations to
+ * be performed regardless of the type.
  *
  * Guarantees:
  *
@@ -110,10 +123,12 @@ extern "C" {
  *
  * All functions are re-entrant. Synchronization is handled internally.
  */
-typedef struct pipe pipe_t;
+typedef struct pipe         pipe_t;
+typedef struct producer     producer_t;
+typedef struct consumer     consumer_t;
+typedef struct pipe_generic pipe_generic_t;
 
-typedef struct producer producer_t;
-typedef struct consumer consumer_t;
+#define PIPE_GENERIC(handle) ((pipe_generic_t*)(handle))
 
 /*
  * Initializes a new pipe storing elements of size `elem_size'. A pusher handle
@@ -155,9 +170,8 @@ void pipe_push(producer_t*, const void* elems, size_t count);
  * the number of elements successfully copied. If there aren't at least `count'
  * elements currently in the pipe, this function will block until:
  *
- * a) there are enough elements to fill the request entirely,
- * b) the pipe's maximum capacity has been hit, or
- * c) all producer_t handles have been freed (including the parent pipe_t).
+ * a) there are enough elements to fill the request entirely, or
+ * b) all producer_t handles have been freed (including the parent pipe_t).
  *
  * If this function returns 0, there will be no more elements coming in. Every
  * subsequent call will return 0.
@@ -172,7 +186,13 @@ size_t pipe_pop(consumer_t*, void* target, size_t count);
  * The default minimum is 32 elements. To reset the reservation size to the
  * default, set count to 0.
  */
-void pipe_reserve(pipe_t*, size_t count);
+void pipe_reserve(pipe_generic_t*, size_t count);
+
+/*
+ * Determines the size of a pipe's elements. This can be used for generic
+ * pipe-processing algorithms to reserve appropriately-sized buffers.
+ */
+size_t PURE pipe_elem_size(pipe_generic_t*);
 
 /*
  * A function that can be used for processing a pipe.
@@ -236,6 +256,8 @@ pipeline_t pipe_pipeline(size_t first_size, ...);
  * does not need to be linked.
  */
 void pipe_run_test_suite();
+
+#undef PURE
 
 #ifdef __cplusplus
 }
