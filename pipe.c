@@ -730,6 +730,7 @@ static void* process_pipe(void* param)
     pipe_producer_free(p.out);
 
     pthread_exit(0);
+    return NULL;
 }
 
 static void pipe_connect(consumer_t* in, pipe_processor_t proc, void* aux, producer_t* out)
