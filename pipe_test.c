@@ -111,7 +111,7 @@ static void double_elems(const void* elems, size_t count, producer_t* out, void*
     pipe_push(out, outbuffer, count);
 }
 
-#define MAX_NUM     10000000
+#define MAX_NUM     1000000
 
 static void generate_test_data(producer_t* p)
 {

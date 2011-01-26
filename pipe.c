@@ -274,7 +274,9 @@ static inline void unlock_pipe(pipe_t* p)
     ENFORCE(pthread_mutex_unlock(&p->m) == 0);
 }
 
-#define WHILE_LOCKED(stuff) do { lock_pipe(p); stuff; unlock_pipe(p); } while(0)
+// runs some code while automatically locking and unlocking the pipe. If `break'
+// is used, the macro will be broken out of after unlocking.
+#define WHILE_LOCKED(stuff) do { lock_pipe(p); stuff; } while(0); unlock_pipe(p)
 
 static inline void init_mutex(pthread_mutex_t* m)
 {
@@ -651,14 +653,11 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
 {
     pipe_t* p = PIPIFY(c);
 
-    if(requested == 0)
-        return 0;
-
     const size_t max_cap           = p->max_cap;
     const size_t elem_size         = p->elem_size;
     const size_t elems_to_wait_for = min(requested, max_cap);
 
-    size_t popped;
+    size_t popped = 0;
 
     WHILE_LOCKED(
         size_t elem_count;
@@ -668,15 +667,16 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
               && p->producer_refcount > 0)
             pthread_cond_wait(&p->just_pushed, &p->m);
 
-        popped = elem_count > 0
-                 ? pop_without_locking(p, target, min(requested, elem_count))
-                 : 0;
-    );
+        if(elem_count == 0)
+            break;
 
-    pthread_cond_broadcast(&p->just_popped);
+        popped = pop_without_locking(p, target, min(requested, elem_count));
+    );
 
     if(popped == 0)
         return 0;
+
+    pthread_cond_broadcast(&p->just_popped);
 
     return popped + pipe_pop(c, (char*)target + popped*elem_size, requested - popped);
 }
