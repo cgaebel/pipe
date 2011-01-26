@@ -42,16 +42,19 @@
 #ifdef __GNUC__
 #define likely(cond)   __builtin_expect(!!(cond), 1)
 #define unlikely(cond) __builtin_expect(!!(cond), 0)
+#define CONSTEXPR __attribute__((const))
 #else
 #define likely(cond)   (cond)
 #define unlikely(cond) (cond)
+#define CONSTEXPR
 #endif
 
 // Runs a memcpy, then returns the end of the range copied.
 // Has identical functionality as mempcpy, but is portable.
 static inline void* offset_memcpy(void* restrict dest, const void* restrict src, size_t n)
 {
-    return (char*)memcpy(dest, src, n) + n;
+    memcpy(dest, src, n);
+    return (char*)dest + n;
 }
 
 /*
@@ -172,12 +175,12 @@ static inline bool wraps_around(const pipe_t* p)
 #define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
 
 // Is the pointer `p' within [left, right]?
-static inline bool in_bounds(const void* left, const void* p, const void* right)
+static inline bool CONSTEXPR in_bounds(const void* left, const void* p, const void* right)
 {
     return p >= left && p <= right;
 }
 
-static size_t next_pow2(size_t n)
+static size_t CONSTEXPR next_pow2(size_t n)
 {
     // I don't see why we would even try. Maybe a stacktrace will help.
     assert(n != 0);
@@ -368,6 +371,7 @@ static inline void* x_free(char* p)
 void pipe_free(pipe_t* p)
 {
     WHILE_LOCKED(
+        check_invariants(p);
         assert(p->producer_refcount > 0);
         assert(p->consumer_refcount > 0);
 
@@ -390,6 +394,7 @@ void pipe_producer_free(producer_t* handle)
     pipe_t* p = PIPIFY(handle);
 
     WHILE_LOCKED(
+        check_invariants(p);
         assert(p->producer_refcount > 0);
 
         --p->producer_refcount;
@@ -406,6 +411,7 @@ void pipe_consumer_free(consumer_t* handle)
     pipe_t* p = PIPIFY(handle);
 
     WHILE_LOCKED(
+        check_invariants(p);
         assert(p->consumer_refcount > 0);
 
         --p->consumer_refcount;
@@ -430,14 +436,19 @@ static inline char* copy_pipe_into_new_buf(const pipe_t* p, char* buf, size_t bu
     assert(bufsize >= p->elem_size * p->elem_count && "Trying to copy into a buffer that's too small.");
     check_invariants(p);
 
+    const char* const begin  = p->begin,
+              * const end    = p->end,
+              * const buffer = p->buffer,
+              * const bufend = p->bufend;
+
     if(wraps_around(p))
     {
-        buf = offset_memcpy(buf, p->begin, p->bufend - p->begin);
-        buf = offset_memcpy(buf, p->buffer, p->end - p->buffer);
+        buf = offset_memcpy(buf, begin, bufend - begin);
+        buf = offset_memcpy(buf, buffer, end - buffer);
     }
     else
     {
-        buf = offset_memcpy(buf, p->begin, p->end - p->begin);
+        buf = offset_memcpy(buf, begin, end - begin);
     }
 
     return buf;
@@ -446,17 +457,22 @@ static inline char* copy_pipe_into_new_buf(const pipe_t* p, char* buf, size_t bu
 static void resize_buffer(pipe_t* p, size_t new_size)
 {
     check_invariants(p);
+    
+    const size_t max_cap    = p->max_cap,
+                 min_cap    = p->min_cap,
+                 elem_size  = p->elem_size,
+                 elem_count = p->elem_count;
 
     // Let's NOT resize beyond our maximum capcity. Thanks =)
-    if(new_size >= p->max_cap)
-        new_size = p->max_cap;
+    if(new_size >= max_cap)
+        new_size = max_cap;
 
     // I refuse to resize to a size smaller than what would keep all our
     // elements in the buffer or one that is smaller than the minimum capacity.
-    if(new_size <= p->elem_count || new_size < p->min_cap)
+    if(new_size <= elem_count || new_size < min_cap)
         return;
 
-    size_t new_size_in_bytes = new_size*p->elem_size;
+    size_t new_size_in_bytes = new_size*elem_size;
 
     char* new_buf = malloc(new_size_in_bytes);
     p->end = copy_pipe_into_new_buf(p, new_buf, new_size_in_bytes);
@@ -523,9 +539,6 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
 void pipe_push(producer_t* prod, const void* elems, size_t count)
 {
     pipe_t* p = PIPIFY(prod);
-
-    assert(elems && "Trying to push a NULL pointer into the pipe. That just won't do.");
-    assert(p);
 
     if(count == 0)
         return;
@@ -638,14 +651,12 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
 {
     pipe_t* p = PIPIFY(c);
 
-    assert(target && "Why are we trying to pop elements out of a pipe and into a NULL buffer?");
-    assert(p);
-
     if(requested == 0)
         return 0;
 
-    const size_t max_cap   = p->max_cap;
-    const size_t elem_size = p->elem_size;
+    const size_t max_cap           = p->max_cap;
+    const size_t elem_size         = p->elem_size;
+    const size_t elems_to_wait_for = min(requested, max_cap);
 
     size_t popped;
 
@@ -653,7 +664,8 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
         size_t elem_count;
 
         // While we need more elements and there exists at least one producer...
-        while((elem_count = p->elem_count) < min(requested, max_cap) && p->producer_refcount > 0)
+        while((elem_count = p->elem_count) < elems_to_wait_for
+              && p->producer_refcount > 0)
             pthread_cond_wait(&p->just_pushed, &p->m);
 
         popped = elem_count > 0
@@ -677,8 +689,6 @@ size_t pipe_elem_size(pipe_generic_t* p)
 void pipe_reserve(pipe_generic_t* gen, size_t count)
 {
     pipe_t* p = PIPIFY(gen);
-    if(p == NULL)
-        return;
 
     if(count == 0)
         count = DEFAULT_MINCAP;

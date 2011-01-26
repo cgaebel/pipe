@@ -29,8 +29,17 @@ extern "C" {
 
 #ifdef __GNUC__
 #define PURE __attribute__((pure))
+#define MALLOC_LIKE __attribute__((malloc))
+#define NO_NULL_POINTERS __attribute__((nonnull))
+#define MUST_SENTINEL __attribute__((sentinel))
+#define WARN_UNUSED_RESULT __attribute((warn_unused_result))
 #else
+/* Feel free to fill in results for more compilers =) */
 #define PURE
+#define MALLOC_LIKE
+#define NO_NULL_POINTERS
+#define MUST_SENTINEL
+#define WARN_UNUSED_RESULT
 #endif
 
 /*
@@ -139,19 +148,19 @@ typedef struct pipe_generic pipe_generic_t;
  * you want this to be 0. However, limits help prevent an explosion of memory
  * usage in cases where production is significantly faster than consumption.
  */
-pipe_t* pipe_new(size_t elem_size, size_t limit);
+pipe_t* MALLOC_LIKE WARN_UNUSED_RESULT pipe_new(size_t elem_size, size_t limit);
 
 /*
  * Makes a production handle to the pipe, allowing push operations. This
  * function is extremely cheap: it doesn't allocate memory.
  */
-producer_t* pipe_producer_new(pipe_t*);
+producer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_producer_new(pipe_t*);
 
 /*
  * Makes a consumption handle to the pipe, allowing pop operations. This
  * function is extremely cheap: it doesn't allocate memory.
  */
-consumer_t* pipe_consumer_new(pipe_t*);
+consumer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_consumer_new(pipe_t*);
 
 /*
  * If you call *_new, you must call the corresponding *_free. Failure to do so
@@ -163,7 +172,7 @@ void pipe_producer_free(producer_t*);
 void pipe_consumer_free(consumer_t*);
 
 /* Copies `count' elements from `elems' into the pipe. */
-void pipe_push(producer_t*, const void* elems, size_t count);
+void NO_NULL_POINTERS pipe_push(producer_t*, const void* elems, size_t count);
 
 /*
  * Tries to pop `count' elements out of the pipe and into `target', returning
@@ -176,7 +185,7 @@ void pipe_push(producer_t*, const void* elems, size_t count);
  * If this function returns 0, there will be no more elements coming in. Every
  * subsequent call will return 0.
  */
-size_t pipe_pop(consumer_t*, void* target, size_t count);
+size_t NO_NULL_POINTERS pipe_pop(consumer_t*, void* target, size_t count);
 
 /*
  * Modifies the pipe to have room for at least `count' elements. If more room
@@ -186,13 +195,13 @@ size_t pipe_pop(consumer_t*, void* target, size_t count);
  * The default minimum is 32 elements. To reset the reservation size to the
  * default, set count to 0.
  */
-void pipe_reserve(pipe_generic_t*, size_t count);
+void NO_NULL_POINTERS pipe_reserve(pipe_generic_t*, size_t count);
 
 /*
  * Determines the size of a pipe's elements. This can be used for generic
  * pipe-processing algorithms to reserve appropriately-sized buffers.
  */
-size_t PURE pipe_elem_size(pipe_generic_t*);
+size_t PURE NO_NULL_POINTERS pipe_elem_size(pipe_generic_t*);
 
 /*
  * A function that can be used for processing a pipe.
@@ -248,15 +257,19 @@ typedef struct {
  *  [int] and returns the last type [awesome] (or NULL if the last vararg was a
  *  function).
  */
-pipeline_t pipe_pipeline(size_t first_size, ...);
+pipeline_t MUST_SENTINEL pipe_pipeline(size_t first_size, ...);
 
 /*
  * Use this to run the pipe self-test. It will call abort() if anything is
  * wrong. This is usually unnecessary. If this is never called, pipe_test.c
  * does not need to be linked.
  */
-void pipe_run_test_suite();
+void pipe_run_test_suite(void);
 
+#undef WARN_UNUSED_RESULT
+#undef MUST_SENTINEL
+#undef NO_NULL_POINTERS
+#undef MALLOC_LIKE
 #undef PURE
 
 #ifdef __cplusplus

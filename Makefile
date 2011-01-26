@@ -5,7 +5,7 @@ NAME=pipe
 
 CFLAGS=-Wall -Wpointer-arith -fstrict-aliasing -std=c99 -pthread -DFORTIFY_SOURCE=2 -pipe -march=native #-Werror
 D_CFLAGS=-DDEBUG -g -O0
-R_CFLAGS=-DNDEBUG -O3 -flto -funroll-loops
+R_CFLAGS=-DNDEBUG -O3 -funroll-loops #-flto
 
 all: pipe_debug pipe_release
 

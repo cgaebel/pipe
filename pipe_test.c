@@ -111,7 +111,7 @@ static void double_elems(const void* elems, size_t count, producer_t* out, void*
     pipe_push(out, outbuffer, count);
 }
 
-#define MAX_NUM     250000
+#define MAX_NUM     10000000
 
 static void generate_test_data(producer_t* p)
 {
@@ -173,7 +173,7 @@ DEF_TEST(pipeline_multiplier)
 #define RUN_TEST(name) \
     do { test_##name(); printf("%s -> [  OK  ]\n", #name); } while(0)
 
-void pipe_run_test_suite()
+void pipe_run_test_suite(void)
 {
     RUN_TEST(basic_storage);
     RUN_TEST(pipeline_multiplier);
