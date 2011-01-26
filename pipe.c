@@ -673,7 +673,7 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
         popped = pop_without_locking(p, target, min(requested, elem_count));
     );
 
-    if(popped == 0)
+    if(!popped)
         return 0;
 
     pthread_cond_broadcast(&p->just_popped);
