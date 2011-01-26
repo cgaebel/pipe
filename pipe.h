@@ -32,7 +32,7 @@ extern "C" {
 #define MALLOC_LIKE __attribute__((malloc))
 #define NO_NULL_POINTERS __attribute__((nonnull))
 #define MUST_SENTINEL __attribute__((sentinel))
-#define WARN_UNUSED_RESULT __attribute((warn_unused_result))
+#define WARN_UNUSED_RESULT __attribute__((warn_unused_result))
 #else
 /* Feel free to fill in results for more compilers =) */
 #define PURE
