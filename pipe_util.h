@@ -40,6 +40,9 @@ extern "C" {
  * count    - the number of elements in `elem_in'
  * elem_out - The producer that may be pushed into to continue the chain
  * aux      - auxilary data previously passed to pipe_connect.
+ *
+ * When `count' is 0, the function will not be called again in that thread. This
+ * would be a good time to free `aux' if necessary.
  */
 typedef void (*pipe_processor_t)(const void* /* elem_in */,
                                  size_t      /* count */,
@@ -58,6 +61,14 @@ typedef struct {
 pipeline_t pipe_simple_pipeline(pipe_t* p);
 
 /*
+ * Connects a pipe with a function running in a new thread. Don't leak your
+ * `aux' pointer!
+ */
+void pipe_connect(consumer_t* in,
+                  pipe_processor_t proc, void* aux,
+                  producer_t* out);
+
+/*
  * Creates a pipeline with multiple instances of the same function working on
  * the same queue. Whenever elements are pushed into the pipeline, the
  * instances will work in parallel to process them.
@@ -69,7 +80,6 @@ pipeline_t pipe_simple_pipeline(pipe_t* p);
  * pipeline in the first place.
  */
 pipeline_t pipe_parallel(size_t           instances,
-                         size_t           bufsize,
                          size_t           in_size,
                          pipe_processor_t proc,
                          void*            aux,
@@ -83,12 +93,6 @@ pipeline_t pipe_parallel(size_t           instances,
  * returned, or 0 (in place of a sizeof()) if you don't want or need a consumer_t.
  * If the last parameter replaces a sizeof(), the return value's `c' member will
  * be NULL.
- *
- * The first parameter determines how much buffering the pipeline will do. It
- * has a unit of "elements", not "bytes". If this parameter is zero, the
- * implementation will pick a "nice" (but generic) value for batch processing.
- * If you want, you can set it to 1 for no buffering at all, or a high value for
- * more buffering.
  *
  * When passing NULL `aux' pointers to your functors, you MUST cast them to
  * void* to maintain 64-bit compatibility. The C standard only requires NULL to
@@ -116,7 +120,7 @@ pipeline_t pipe_parallel(size_t           instances,
  *  [int] and returns the last type [awesome] (or NULL if the last vararg was a
  *  function).
  */
-pipeline_t MUST_SENTINEL pipe_pipeline(size_t bufsize, size_t first_size, ...);
+pipeline_t MUST_SENTINEL pipe_pipeline(size_t first_size, ...);
 
 #undef MUST_SENTINEL
 

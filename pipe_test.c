@@ -139,7 +139,7 @@ static void validate_consumer(consumer_t* c)
 DEF_TEST(pipeline_multiplier)
 {
     pipeline_t pipeline =
-        pipe_pipeline(0, sizeof(testdata_t),
+        pipe_pipeline(sizeof(testdata_t),
                       &double_elems, (void*)NULL, sizeof(testdata_t),
                       &double_elems, (void*)NULL, sizeof(testdata_t),
                       &double_elems, (void*)NULL, sizeof(testdata_t),
