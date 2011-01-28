@@ -174,10 +174,9 @@ void NO_NULL_POINTERS pipe_push(producer_t*, const void* elems, size_t count);
 
 /*
  * Tries to pop `count' elements out of the pipe and into `target', returning
- * the number of elements successfully copied. If there aren't at least `count'
- * elements currently in the pipe, this function will block until:
+ * the number of elements successfully copied. This function will block until:
  *
- * a) there are enough elements to fill the request entirely, or
+ * a) there is at least one element in the pipe.
  * b) all producer_t handles have been freed (including the parent pipe_t).
  *
  * If this function returns 0, there will be no more elements coming in. Every

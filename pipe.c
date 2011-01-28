@@ -298,7 +298,7 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     pipe_t* p = malloc(sizeof(pipe_t));
 
     size_t cap = DEFAULT_MINCAP;
-    char* buf  = malloc(elem_size * DEFAULT_MINCAP);
+    char* buf  = malloc(elem_size * cap);
 
     *p = (pipe_t) {
         .elem_size  = elem_size,
@@ -659,18 +659,14 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
 {
     pipe_t* p = PIPIFY(c);
 
-    const size_t max_cap           = p->max_cap;
-    const size_t elem_size         = p->elem_size;
-    const size_t elems_to_wait_for = min(requested, max_cap);
-
     size_t popped = 0;
 
     WHILE_LOCKED(
-        size_t elem_count;
+        size_t elem_count = p->elem_count;
 
         // While we need more elements and there exists at least one producer...
-        while((elem_count = p->elem_count) < elems_to_wait_for
-              && p->producer_refcount > 0)
+        for(; elem_count == 0 && p->producer_refcount > 0;
+              elem_count = p->elem_count)
             pthread_cond_wait(&p->just_pushed, &p->m);
 
         if(elem_count == 0)
@@ -684,7 +680,8 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
 
     pthread_cond_broadcast(&p->just_popped);
 
-    return popped + pipe_pop(c, (char*)target + popped*elem_size, requested - popped);
+    return popped +
+        pipe_pop(c, (char*)target + popped*p->elem_size, requested - popped);
 }
 
 size_t pipe_elem_size(pipe_generic_t* p)
