@@ -31,14 +31,12 @@ extern "C" {
 #define PURE                __attribute__((pure))
 #define MALLOC_LIKE         __attribute__((malloc))
 #define NO_NULL_POINTERS    __attribute__((nonnull))
-#define MUST_SENTINEL       __attribute__((sentinel))
 #define WARN_UNUSED_RESULT  __attribute__((warn_unused_result))
 #else
 /* Feel free to fill in results for more compilers =) */
 #define PURE
 #define MALLOC_LIKE
 #define NO_NULL_POINTERS
-#define MUST_SENTINEL
 #define WARN_UNUSED_RESULT
 #endif
 
@@ -204,62 +202,6 @@ void NO_NULL_POINTERS pipe_reserve(pipe_generic_t*, size_t count);
 size_t PURE NO_NULL_POINTERS pipe_elem_size(pipe_generic_t*);
 
 /*
- * A function that can be used for processing a pipe.
- *
- * elem_in  - an array of elements to process
- * count    - the number of elements in `elem_in'
- * elem_out - The producer that may be pushed into to continue the chain
- * aux      - auxilary data previously passed to pipe_connect.
- */
-typedef void (*pipe_processor_t)(const void* /* elem_in */,
-                                 size_t      /* count */,
-                                 producer_t* /* elem_out */,
-                                 void*       /* aux */
-                                );
-
-typedef struct {
-    producer_t* p;
-    consumer_t* c;
-} pipeline_t;
-
-/*
- * A pipeline consists of a list of functions and pipes. As data is recieved in
- * one end, it is processed by each of the pipes and pushed into the other end.
- * Each stage's processing is done in a seperate thread. The last parameter must
- * be NULL (in place of a pipe_processor_t) if you want to have a consumer_t
- * returned, or 0 (in place of a sizeof()) if you don't want or need a consumer_t.
- * If the last parameter replaces a sizeof(), the return value's `c' member will
- * be NULL.
- *
- * When passing NULL `aux' pointers to your functors, you MUST cast them to
- * void* to maintain 64-bit compatibility. The C standard only requires NULL to
- * be defined as 0, so will be cast to a 32-bit wide int. This will destroy
- * alignment since pipe_pipeline looks for a void* in that space.
- *
- * Sample:
- *  pipeline_t p = pipe_pipeline(sizeof(int),
- *                               &int_to_float,       &i2f_data,   sizeof(float),
- *                               &float_to_garbage,   &f2g_data,   sizeof(garbage),
- *                               &garbage_to_awesome, (void*)NULL, sizeof(awesome),
- *                               (void*)NULL
- *                              );
- *
- *  // Now push all your ints into p.p ...
- *
- *  pipe_producer_free(p.p);
- *
- *  // Now pop all your awesome out of p.c ...
- *
- *  pipe_consumer_free(p.c);
- *
- *  NOTE: All the functions must be of type pipe_processor_t. This call will
- *  return a pipeline which takes the type specified by the first parameter
- *  [int] and returns the last type [awesome] (or NULL if the last vararg was a
- *  function).
- */
-pipeline_t MUST_SENTINEL pipe_pipeline(size_t first_size, ...);
-
-/*
  * Use this to run the pipe self-test. It will call abort() if anything is
  * wrong. This is usually unnecessary. If this is never called, pipe_test.c
  * does not need to be linked.
@@ -267,7 +209,6 @@ pipeline_t MUST_SENTINEL pipe_pipeline(size_t first_size, ...);
 void pipe_run_test_suite(void);
 
 #undef WARN_UNUSED_RESULT
-#undef MUST_SENTINEL
 #undef NO_NULL_POINTERS
 #undef MALLOC_LIKE
 #undef PURE

@@ -25,7 +25,6 @@
 #include <assert.h>
 #include <limits.h>
 #include <pthread.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -225,6 +224,10 @@ static void check_invariants(const pipe_t* p)
         assert(p->consumer_refcount == 0);
         return;
     }
+    else
+    {
+        assert(p->consumer_refcount != 0);
+    }
 
     assert(p->bufend);
     assert(p->begin);
@@ -294,12 +297,19 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
 
     pipe_t* p = malloc(sizeof(pipe_t));
 
+    size_t cap = DEFAULT_MINCAP;
+    char* buf  = malloc(elem_size * DEFAULT_MINCAP);
+
     *p = (pipe_t) {
         .elem_size  = elem_size,
         .elem_count = 0,
-        .capacity = DEFAULT_MINCAP,
+        .capacity = cap,
         .min_cap = DEFAULT_MINCAP,
-        .max_cap = limit ? next_pow2(max(limit, DEFAULT_MINCAP)) : ~(size_t)0,
+        .max_cap = limit ? next_pow2(max(limit, cap)) : ~(size_t)0,
+
+        .buffer = buf,
+        .begin  = buf,
+        .end    = buf,
 
         // Since we're issuing a pipe_t, it counts as both a producer and a
         // consumer since it can issue new instances of both. Therefore, the
@@ -307,10 +317,6 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
         .producer_refcount = 1,
         .consumer_refcount = 1
     };
-
-    p->buffer =
-    p->begin  =
-    p->end    = malloc(p->elem_size * p->capacity);
 
     fix_bufend(p);
 
@@ -459,7 +465,7 @@ static inline char* copy_pipe_into_new_buf(const pipe_t* p, char* buf, size_t bu
 static void resize_buffer(pipe_t* p, size_t new_size)
 {
     check_invariants(p);
-    
+
     const size_t max_cap    = p->max_cap,
                  min_cap    = p->min_cap,
                  elem_size  = p->elem_size,
@@ -702,103 +708,6 @@ void pipe_reserve(pipe_generic_t* gen, size_t count)
         p->min_cap = min(count, max_cap);
         resize_buffer(p, count);
     );
-}
-
-// How many elements will we process at once?
-#define BUFFER_SIZE     32
-
-typedef struct {
-    consumer_t* in;
-    pipe_processor_t proc;
-    void* aux;
-    producer_t* out;
-} connect_data_t;
-
-static void* process_pipe(void* param)
-{
-    connect_data_t p = *(connect_data_t*)param;
-    free(param);
-
-    char buf[BUFFER_SIZE * PIPIFY(p.in)->elem_size];
-
-    size_t elems_read;
-
-    while((elems_read = pipe_pop(p.in, buf, BUFFER_SIZE)))
-        p.proc(buf, elems_read, p.out, p.aux);
-
-    pipe_consumer_free(p.in);
-    pipe_producer_free(p.out);
-
-    pthread_exit(0);
-    return NULL;
-}
-
-static void pipe_connect(consumer_t* in, pipe_processor_t proc, void* aux, producer_t* out)
-{
-    assert(in);
-    assert(out);
-    assert(proc);
-
-    connect_data_t* d = malloc(sizeof(connect_data_t));
-
-    *d = (connect_data_t) {
-        .in = in,
-        .proc = proc,
-        .aux = aux,
-        .out = out
-    };
-
-    pthread_t t;
-    pthread_create(&t, NULL, &process_pipe, d);
-}
-
-static pipeline_t pipe_pipeline_impl(pipeline_t result_so_far,
-                                     va_list args)
-{
-    pipe_processor_t proc = va_arg(args, pipe_processor_t);
-
-    if(proc == NULL)
-        return result_so_far;
-
-    void*  aux       = va_arg(args, void*);
-    size_t pipe_size = va_arg(args, size_t);
-
-    if(pipe_size == 0)
-    {
-        pipe_consumer_free(result_so_far.c);
-        result_so_far.c = NULL;
-        return result_so_far;
-    }
-
-    pipe_t* pipe = pipe_new(pipe_size, 0);
-
-    pipe_connect(result_so_far.c, proc, aux, pipe_producer_new(pipe));
-    result_so_far.c = pipe_consumer_new(pipe);
-
-    pipe_free(pipe);
-
-    return pipe_pipeline_impl(result_so_far, args);
-}
-
-pipeline_t pipe_pipeline(size_t first_size, ...)
-{
-    va_list va;
-    va_start(va, first_size);
-
-    pipe_t* p = pipe_new(first_size, 0);
-
-    pipeline_t ret = {
-        .p = pipe_producer_new(p),
-        .c = pipe_consumer_new(p)
-    };
-
-    pipe_free(p);
-
-    ret = pipe_pipeline_impl(ret, va);
-
-    va_end(va);
-
-    return ret;
 }
 
 /* vim: set et ts=4 sw=4 softtabstop=4 textwidth=80: */

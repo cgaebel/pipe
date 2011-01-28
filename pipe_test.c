@@ -21,6 +21,7 @@
  * THE SOFTWARE.
  */
 #include "pipe.h"
+#include "pipe_util.h"
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -138,7 +139,7 @@ static void validate_consumer(consumer_t* c)
 DEF_TEST(pipeline_multiplier)
 {
     pipeline_t pipeline =
-        pipe_pipeline(sizeof(testdata_t),
+        pipe_pipeline(0, sizeof(testdata_t),
                       &double_elems, (void*)NULL, sizeof(testdata_t),
                       &double_elems, (void*)NULL, sizeof(testdata_t),
                       &double_elems, (void*)NULL, sizeof(testdata_t),
@@ -150,11 +151,11 @@ DEF_TEST(pipeline_multiplier)
                       (void*)NULL
                      );
 
-    assert(pipeline.p);
-    assert(pipeline.c);
+    assert(pipeline.in);
+    assert(pipeline.out);
 
-    generate_test_data(pipeline.p); pipe_producer_free(pipeline.p);
-    validate_consumer(pipeline.c);  pipe_consumer_free(pipeline.c);
+    generate_test_data(pipeline.in); pipe_producer_free(pipeline.in);
+    validate_consumer(pipeline.out);  pipe_consumer_free(pipeline.out);
 }
 
 /*
