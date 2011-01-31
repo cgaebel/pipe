@@ -5,7 +5,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
-pipeline_t pipe_simple_pipeline(pipe_t* p)
+pipeline_t pipe_trivial_pipeline(pipe_t* p)
 {
     return (pipeline_t) {
         .in  = pipe_producer_new(p),
@@ -79,13 +79,15 @@ pipeline_t pipe_parallel(size_t           instances,
                      proc, aux,
                      pipe_producer_new(out));
 
-    pipe_free(in);
-    pipe_free(out);
-
-    return (pipeline_t) {
+    pipeline_t ret = {
         .in  = pipe_producer_new(in),
         .out = pipe_consumer_new(out)
     };
+
+    pipe_free(in);
+    pipe_free(out);
+
+    return ret;
 }
 
 static pipeline_t va_pipe_pipeline(pipeline_t result_so_far,
@@ -123,7 +125,7 @@ pipeline_t pipe_pipeline(size_t first_size, ...)
 
     pipe_t* p = pipe_new(first_size, 0);
 
-    pipeline_t ret = va_pipe_pipeline(pipe_simple_pipeline(p), va);
+    pipeline_t ret = va_pipe_pipeline(pipe_trivial_pipeline(p), va);
 
     pipe_free(p);
 

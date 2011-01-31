@@ -29,6 +29,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define UNUSED_PARAMETER(var) (var) = (var)
+
 // All this hackery is just to get asserts to work in release build.
 
 #ifdef NDEBUG
@@ -102,6 +104,8 @@ typedef struct {
 
 static void double_elems(const void* elems, size_t count, producer_t* out, void* aux)
 {
+    UNUSED_PARAMETER(aux);
+
     testdata_t outbuffer[count];
 
     memcpy(outbuffer, elems, count*sizeof(testdata_t));
@@ -112,7 +116,7 @@ static void double_elems(const void* elems, size_t count, producer_t* out, void*
     pipe_push(out, outbuffer, count);
 }
 
-#define MAX_NUM     1000000
+#define MAX_NUM     500000
 
 static void generate_test_data(producer_t* p)
 {
@@ -123,17 +127,17 @@ static void generate_test_data(producer_t* p)
     }
 }
 
-static inline void validate_test_data(testdata_t t)
+static inline void validate_test_data(testdata_t t, int multiplier)
 {
-    assert(t.new == t.orig*256);
+    assert(t.new == t.orig*multiplier);
 }
 
-static void validate_consumer(consumer_t* c)
+static void validate_consumer(consumer_t* c, unsigned doublings)
 {
     testdata_t t;
 
     while(pipe_pop(c, &t, 1))
-        validate_test_data(t);
+        validate_test_data(t, 1 << doublings);
 }
 
 DEF_TEST(pipeline_multiplier)
@@ -155,7 +159,22 @@ DEF_TEST(pipeline_multiplier)
     assert(pipeline.out);
 
     generate_test_data(pipeline.in); pipe_producer_free(pipeline.in);
-    validate_consumer(pipeline.out);  pipe_consumer_free(pipeline.out);
+    validate_consumer(pipeline.out, 8);  pipe_consumer_free(pipeline.out);
+}
+
+DEF_TEST(parallel_multiplier)
+{
+    pipeline_t pipeline =
+        pipe_parallel(4,
+                      sizeof(testdata_t),
+                      &double_elems, (void*)NULL,
+                      sizeof(testdata_t));
+
+    assert(pipeline.in);
+    assert(pipeline.out);
+
+    generate_test_data(pipeline.in); pipe_producer_free(pipeline.in);
+    validate_consumer(pipeline.out, 1); pipe_consumer_free(pipeline.out);
 }
 
 /*
@@ -172,12 +191,13 @@ DEF_TEST(pipeline_multiplier)
  */
 
 #define RUN_TEST(name) \
-    do { test_##name(); printf("%s -> [  OK  ]\n", #name); } while(0)
+    do { printf("%s ->", #name); test_##name(); printf(" [  OK  ]\n"); } while(0)
 
 void pipe_run_test_suite(void)
 {
     RUN_TEST(basic_storage);
     RUN_TEST(pipeline_multiplier);
+    RUN_TEST(parallel_multiplier);
 }
 
 /* vim: set et ts=4 sw=4 softtabstop=4 textwidth=80: */

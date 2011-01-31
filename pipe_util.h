@@ -56,9 +56,10 @@ typedef struct {
 } pipeline_t;
 
 /*
- * Creates a pipeline wrapping an existing pipe.
+ * Creates a pipeline wrapping an existing pipe. It basically just issues a
+ * producer and consumer and throws them out as a basic NUL pipeline.
  */
-pipeline_t pipe_simple_pipeline(pipe_t* p);
+pipeline_t pipe_trivial_pipeline(pipe_t* p);
 
 /*
  * Connects a pipe with a function running in a new thread. Don't leak your
@@ -75,9 +76,9 @@ void pipe_connect(consumer_t* in,
  *
  * `proc' is run in `instances' many threads, each one being passed _the same_
  * `aux'. It is highly recommended to avoid as much shared state as possible,
- * as resource management can get very annoying with this setup and any
- * synchronization will eat away at any concurrency gained by using the
- * pipeline in the first place.
+ * but if you must, you should know the pipe processor's "termination call"
+ * (count of 0) will happen once a thread. You'll probably want to refcount
+ * your auxilary data to ensure there are no double-free bugs.
  */
 pipeline_t pipe_parallel(size_t           instances,
                          size_t           in_size,

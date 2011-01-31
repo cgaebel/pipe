@@ -27,6 +27,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,7 +51,9 @@
 
 // Runs a memcpy, then returns the end of the range copied.
 // Has identical functionality as mempcpy, but is portable.
-static inline void* offset_memcpy(void* restrict dest, const void* restrict src, size_t n)
+static inline void* offset_memcpy(void* restrict dest,
+                                  const void* restrict src,
+                                  size_t n)
 {
     memcpy(dest, src, n);
     return (char*)dest + n;
@@ -113,37 +116,33 @@ static inline void* offset_memcpy(void* restrict dest, const void* restrict src,
  * debug builds as the pipe can easily become a bottleneck.
  */
 struct pipe {
-    size_t elem_size;  // The size of each element. This is read-only and
+    size_t elem_size,  // The size of each element. This is read-only and
                        // therefore does not need to be locked to read.
-    size_t elem_count; // The number of elements currently in the pipe.
-    size_t capacity;   // The maximum number of elements the buffer can hold
+           elem_count, // The number of elements currently in the pipe.
+           capacity,   // The maximum number of elements the buffer can hold
                        // before a reallocation.
-    size_t min_cap;    // The smallest sane capacity before the buffer refuses
+           min_cap,    // The smallest sane capacity before the buffer refuses
                        // to shrink because it would just end up growing again.
-    size_t max_cap;    // The maximum capacity (unlimited if zero) of the pipe
+           max_cap;    // The maximum capacity (unlimited if zero) of the pipe
                        // before push requests are blocked. This is read-only
                        // and therefore does not need to be locked to read.
 
     char * buffer,     // The internal buffer, holding the enqueued elements.
          * bufend,     // Just a shortcut pointer to the end of the buffer.
-                       // It helps me not constantly type (p->buffer + p->elem_size*p->capacity).
-         * begin,      // Always points to the left-most/first-pushed element in the pipe.
-         * end;        // Always points to the right-most/last-pushed element in the pipe.
+                       // It helps me avoid constantly typing
+                       // (p->buffer + p->elem_size*p->capacity).
+         * begin,      // Always points to the left-most element in the pipe.
+         * end;        // Always points past the right-most element in the pipe.
 
-    size_t producer_refcount;      // The number of producers currently in circulation.
-    size_t consumer_refcount;      // The number of consumers currently in circulation.
+    size_t producer_refcount,      // The number of producers in circulation.
+           consumer_refcount;      // The number of consumers in circulation.
 
     pthread_mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
                                    // coarse-grained locking.
 
-    pthread_cond_t  just_pushed;   // Signaled immediately after any push operation.
-    pthread_cond_t  just_popped;   // Signaled immediately after any pop operation.
+    pthread_cond_t  just_pushed,   // Signaled immediately after any push operation.
+                    just_popped;   // Signaled immediately after any pop operation.
 };
-
-// Poor man's typedef. For more information, see DEF_NEW_FUNC's typedef.
-struct producer {};
-struct consumer {};
-struct pipe_generic {};
 
 // Converts a pointer to either a producer or consumer into a suitable pipe_t*.
 #define PIPIFY(producer_or_consumer) ((pipe_t*)(producer_or_consumer))
@@ -174,7 +173,9 @@ static inline bool wraps_around(const pipe_t* p)
 #define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
 
 // Is the pointer `p' within [left, right]?
-static inline bool CONSTEXPR in_bounds(const void* left, const void* p, const void* right)
+static inline bool CONSTEXPR in_bounds(const void* left,
+                                       const void* p,
+                                       const void* right)
 {
     return p >= left && p <= right;
 }
@@ -235,8 +236,10 @@ static void check_invariants(const pipe_t* p)
 
     assert(p->elem_size != 0);
 
-    assert(p->elem_count <= p->capacity && "There are more elements in the buffer than its capacity.");
-    assert(p->bufend == p->buffer + p->elem_size*p->capacity && "This is axiomatic. Was fix_bufend not called somewhere?");
+    assert(p->elem_count <= p->capacity
+            && "There are more elements in the buffer than its capacity.");
+    assert(p->bufend == p->buffer + p->elem_size*p->capacity
+            && "This is axiomatic. Was fix_bufend not called somewhere?");
 
     assert(in_bounds(p->buffer, p->begin, p->bufend));
     assert(in_bounds(p->buffer, p->end, p->bufend));
@@ -245,16 +248,20 @@ static void check_invariants(const pipe_t* p)
     assert(p->min_cap <= p->max_cap);
     assert(p->capacity >= p->min_cap && p->capacity <= p->max_cap);
 
-    assert(p->begin != p->bufend && "The begin pointer should NEVER point to the end of the buffer."
-                    "If it does, it should have been automatically moved to the front.");
+    assert(p->begin != p->bufend
+            && "The begin pointer should NEVER point to the end of the buffer."
+               "If it does, it should have been automatically moved to the front.");
 
     // Ensure the size accurately reflects the begin/end pointers' positions.
     // Kindly refer to the diagram in struct pipe's documentation =)
 
-    if(wraps_around(p)) //                   v     left half    v   v     right half     v
-        assert(p->elem_size*p->elem_count == (p->end - p->buffer) + (p->bufend - p->begin));
+    if(wraps_around(p))
+        assert(p->elem_size*p->elem_count ==
+        //            v    left half     v   v     right half     v
+          (uintptr_t)((p->end - p->buffer) + (p->bufend - p->begin)));
     else
-        assert(p->elem_size*p->elem_count == p->end - p->begin);
+        assert(p->elem_size*p->elem_count ==
+          (uintptr_t)(p->end - p->begin));
 }
 
 // Enforce is just assert, but runs the expression in release build, instead of
@@ -281,16 +288,6 @@ static inline void unlock_pipe(pipe_t* p)
 // is used, the macro will be broken out of after unlocking.
 #define WHILE_LOCKED(stuff) do { lock_pipe(p); stuff; } while(0); unlock_pipe(p)
 
-static inline void init_mutex(pthread_mutex_t* m)
-{
-    pthread_mutexattr_t attr;
-
-    ENFORCE(pthread_mutexattr_init(&attr) == 0);
-    ENFORCE(pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_PRIVATE) == 0);
-
-    ENFORCE(pthread_mutex_init(m, &attr) == 0);
-}
-
 pipe_t* pipe_new(size_t elem_size, size_t limit)
 {
     assert(elem_size != 0);
@@ -308,6 +305,7 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
         .max_cap = limit ? next_pow2(max(limit, cap)) : ~(size_t)0,
 
         .buffer = buf,
+        .bufend = buf + elem_size * cap,
         .begin  = buf,
         .end    = buf,
 
@@ -315,15 +313,13 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
         // consumer since it can issue new instances of both. Therefore, the
         // refcounts both start at 1; not the intuitive 0.
         .producer_refcount = 1,
-        .consumer_refcount = 1
+        .consumer_refcount = 1,
+
+        .m = PTHREAD_MUTEX_INITIALIZER,
+
+        .just_pushed = PTHREAD_COND_INITIALIZER,
+        .just_popped = PTHREAD_COND_INITIALIZER
     };
-
-    fix_bufend(p);
-
-    init_mutex(&p->m);
-
-    ENFORCE(pthread_cond_init(&p->just_pushed, NULL) == 0);
-    ENFORCE(pthread_cond_init(&p->just_popped, NULL) == 0);
 
     check_invariants(p);
 
@@ -370,7 +366,7 @@ static inline void deallocate(pipe_t* p)
     free(p);
 }
 
-static inline void* x_free(char* p)
+static inline void* x_free(void* p)
 {
     free(p);
     return NULL;
@@ -390,7 +386,10 @@ void pipe_free(pipe_t* p)
             p->buffer = x_free(p->buffer);
 
         if(unlikely(requires_deallocation(p)))
-            return deallocate(p);
+        {
+            deallocate(p);
+            return;
+        }
     );
 
     pthread_cond_broadcast(&p->just_pushed);
@@ -399,7 +398,7 @@ void pipe_free(pipe_t* p)
 
 void pipe_producer_free(producer_t* handle)
 {
-    pipe_t* p = PIPIFY(handle);
+    pipe_t *restrict p = PIPIFY(handle);
 
     WHILE_LOCKED(
         check_invariants(p);
@@ -408,7 +407,10 @@ void pipe_producer_free(producer_t* handle)
         --p->producer_refcount;
 
         if(unlikely(requires_deallocation(p)))
-            return deallocate(p);
+        {
+            deallocate(p);
+            return;
+        }
     );
 
     pthread_cond_broadcast(&p->just_pushed);
@@ -416,7 +418,7 @@ void pipe_producer_free(producer_t* handle)
 
 void pipe_consumer_free(consumer_t* handle)
 {
-    pipe_t* p = PIPIFY(handle);
+    pipe_t *restrict p = PIPIFY(handle);
 
     WHILE_LOCKED(
         check_invariants(p);
@@ -430,7 +432,10 @@ void pipe_consumer_free(consumer_t* handle)
             p->buffer = x_free(p->buffer);
 
         if(unlikely(requires_deallocation(p)))
-            return deallocate(p);
+        {
+            deallocate(p);
+            return;
+        }
     );
 
     // This just ensures any waiting pushers get woken up. We don't want them
@@ -439,9 +444,9 @@ void pipe_consumer_free(consumer_t* handle)
 }
 
 // Returns the end of the buffer (buf + number_of_bytes_copied).
-static inline char* copy_pipe_into_new_buf(const pipe_t* p, char* buf, size_t bufsize)
+static inline char* copy_pipe_into_new_buf(const pipe_t* p,
+                                           char* buf)
 {
-    assert(bufsize >= p->elem_size * p->elem_count && "Trying to copy into a buffer that's too small.");
     check_invariants(p);
 
     const char* const begin  = p->begin,
@@ -480,14 +485,12 @@ static void resize_buffer(pipe_t* p, size_t new_size)
     if(new_size <= elem_count || new_size < min_cap)
         return;
 
-    size_t new_size_in_bytes = new_size*elem_size;
-
-    char* new_buf = malloc(new_size_in_bytes);
-    p->end = copy_pipe_into_new_buf(p, new_buf, new_size_in_bytes);
+    char* new_buf = malloc(new_size * elem_size);
+    p->end = copy_pipe_into_new_buf(p, new_buf);
 
     free(p->buffer);
 
-    p->buffer = p->begin = new_buf;
+    p->begin = p->buffer = new_buf;
     p->capacity = new_size;
 
     fix_bufend(p);
@@ -499,21 +502,23 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
 {
     check_invariants(p);
     assert(count != 0);
+    assert(p->elem_count + count <= p->max_cap);
 
     const size_t elem_count = p->elem_count,
                  elem_size  = p->elem_size;
 
-    if(elem_count + count > p->capacity)
+    if(unlikely(elem_count + count > p->capacity))
         resize_buffer(p, next_pow2(elem_count + count));
 
     // Since we've just grown the buffer (if necessary), we now KNOW we have
     // enough room for the push. So do it!
- 
+    assert(p->capacity >= elem_count + count);
+
     size_t bytes_to_copy = count*elem_size;
 
-    char* const buffer = p->buffer;
-    char* const bufend = p->bufend;
-    char*       end    = p->end;
+    char* const buffer = p->buffer,
+        * const bufend = p->bufend,
+        *       end    = p->end;
 
     // If we currently have a nowrap buffer, we may have to wrap the new
     // elements. Copy as many as we can at the end, then start copying into the
@@ -521,7 +526,7 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     // buffers, which can be dealt with using a single offset_memcpy.
     if(!wraps_around(p))
     {
-        size_t at_end = min(bytes_to_copy, bufend - end);
+        size_t at_end = min(bytes_to_copy, (size_t)(bufend - end));
 
         WRAP_PTR_IF_NECESSARY(end);
         end = offset_memcpy(end, elems, at_end);
@@ -548,13 +553,13 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
 {
     pipe_t* p = PIPIFY(prod);
 
-    if(count == 0)
+    if(unlikely(count == 0))
         return;
 
     const size_t elem_size = p->elem_size,
                  max_cap   = p->max_cap;
 
-    size_t elems_pushed = 0;
+    size_t pushed = 0;
 
     WHILE_LOCKED(
         size_t elem_count        = p->elem_count;
@@ -569,27 +574,37 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
         // Don't perform an actual push if we have no consumers issued. The
         // buffer's been freed.
         if(unlikely(consumer_refcount == 0))
-            return unlock_pipe(p);
+        {
+            unlock_pipe(p);
+            return;
+        }
 
         // Push as many elements into the queue as possible.
         push_without_locking(p, elems,
-            elems_pushed = min(count, max_cap - elem_count)
+            pushed = min(count, max_cap - elem_count)
         );
-
-        assert(elems_pushed > 0);
     );
 
-    pthread_cond_broadcast(&p->just_pushed);
+    assert(pushed > 0);
+
+    (pushed == 1 ? pthread_cond_signal : pthread_cond_broadcast)(&p->just_pushed);
+
+    size_t remaining = count - pushed;
+
+    if(likely(remaining == 0))
+        return;
 
     // now get the rest of the elements, which we didn't have enough room for
     // in the pipe.
-    return pipe_push(prod,
-                     (const char*)elems + elems_pushed * elem_size,
-                     count - elems_pushed);
+    pipe_push(prod,
+              (const char*)elems + pushed * elem_size,
+              remaining);
 }
 
 // wow, I didn't even intend for the name to work like that...
-static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
+static inline size_t pop_without_locking(pipe_t* p,
+                                         void* restrict target,
+                                         size_t count)
 {
     check_invariants(p);
 
@@ -604,15 +619,15 @@ static inline size_t pop_without_locking(pipe_t* p, void* target, size_t count)
     p->elem_count =
        elem_count = elem_count - elems_to_copy;
 
-    char* const buffer = p->buffer;
-    char* const bufend = p->bufend;
-    char*       begin  = p->begin;
+    char* const buffer = p->buffer,
+        * const bufend = p->bufend,
+        *       begin  = p->begin;
 
 //  Copy [begin, min(bufend, begin + bytes_to_copy)) into target.
     {
         // Copy either as many bytes as requested, or the available bytes in
         // the RHS of a wrapped buffer - whichever is smaller.
-        size_t first_bytes_to_copy = min(bytes_remaining, bufend - begin);
+        size_t first_bytes_to_copy = min(bytes_remaining, (size_t)(bufend - begin));
 
         target = offset_memcpy(target, begin, first_bytes_to_copy);
 
@@ -672,13 +687,13 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
         if(elem_count == 0)
             break;
 
-        popped = pop_without_locking(p, target, min(requested, elem_count));
+        popped = pop_without_locking(p, target, requested);
     );
 
-    if(!popped)
+    if(unlikely(!popped))
         return 0;
 
-    pthread_cond_broadcast(&p->just_popped);
+    (popped == 1 ? pthread_cond_signal : pthread_cond_broadcast)(&p->just_popped);
 
     return popped +
         pipe_pop(c, (char*)target + popped*p->elem_size, requested - popped);
@@ -700,7 +715,7 @@ void pipe_reserve(pipe_generic_t* gen, size_t count)
 
     WHILE_LOCKED(
         if(count <= p->elem_count)
-            return unlock_pipe(p);
+            break;
 
         p->min_cap = min(count, max_cap);
         resize_buffer(p, count);
