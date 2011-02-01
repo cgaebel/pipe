@@ -44,15 +44,15 @@ extern "C" {
  * When `count' is 0, the function will not be called again in that thread. This
  * would be a good time to free `aux' if necessary.
  */
-typedef void (*pipe_processor_t)(const void* /* elem_in */,
-                                 size_t      /* count */,
-                                 producer_t* /* elem_out */,
-                                 void*       /* aux */
+typedef void (*pipe_processor_t)(const void*      /* elem_in */,
+                                 size_t           /* count */,
+                                 pipe_producer_t* /* elem_out */,
+                                 void*            /* aux */
                                 );
 
 typedef struct {
-    producer_t* in;
-    consumer_t* out;
+    pipe_producer_t* in;
+    pipe_consumer_t* out;
 } pipeline_t;
 
 /*
@@ -65,9 +65,9 @@ pipeline_t pipe_trivial_pipeline(pipe_t* p);
  * Connects a pipe with a function running in a new thread. Don't leak your
  * `aux' pointer!
  */
-void pipe_connect(consumer_t* in,
+void pipe_connect(pipe_consumer_t* in,
                   pipe_processor_t proc, void* aux,
-                  producer_t* out);
+                  pipe_producer_t* out);
 
 /*
  * Creates a pipeline with multiple instances of the same function working on

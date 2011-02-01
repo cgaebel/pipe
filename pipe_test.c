@@ -65,8 +65,8 @@
 DEF_TEST(basic_storage)
 {
     pipe_t* pipe = pipe_new(sizeof(int), 0);
-    producer_t* p = pipe_producer_new(pipe);
-    consumer_t* c = pipe_consumer_new(pipe);
+    pipe_producer_t* p = pipe_producer_new(pipe);
+    pipe_consumer_t* c = pipe_consumer_new(pipe);
     pipe_free(pipe);
 
     int a[] = { 0, 1, 2, 3, 4 };
@@ -102,7 +102,7 @@ typedef struct {
     int new;
 } testdata_t;
 
-static void double_elems(const void* elems, size_t count, producer_t* out, void* aux)
+static void double_elems(const void* elems, size_t count, pipe_producer_t* out, void* aux)
 {
     UNUSED_PARAMETER(aux);
 
@@ -118,7 +118,7 @@ static void double_elems(const void* elems, size_t count, producer_t* out, void*
 
 #define MAX_NUM     500000
 
-static void generate_test_data(producer_t* p)
+static void generate_test_data(pipe_producer_t* p)
 {
     for(int i = 0; i < MAX_NUM; ++i)
     {
@@ -132,7 +132,7 @@ static inline void validate_test_data(testdata_t t, int multiplier)
     assert(t.new == t.orig*multiplier);
 }
 
-static void validate_consumer(consumer_t* c, unsigned doublings)
+static void validate_consumer(pipe_consumer_t* c, unsigned doublings)
 {
     testdata_t t;
 

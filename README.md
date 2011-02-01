@@ -1,10 +1,15 @@
 pipe.c
 =============
 
-What is it?/Design Goals
--------------
+- brings concurrency to C
+- hopefully will spill over into other languages (C is universal and
+  easy to interop with)
+- building block of larger frameworks (message passing et al)
+- 
 
-Brief introduction to pipe. Why it was made, how it changes the game, etc.
+C has historically had minimal support for multithreading, and even less
+for concurrency. *pipe.c* aims to be the first step in fixing that
+that.
 
 Technical Details
 ------------------

@@ -130,10 +130,10 @@ extern "C" {
  *
  * All functions are re-entrant. Synchronization is handled internally.
  */
-typedef struct pipe         pipe_t;
-typedef struct producer     producer_t;
-typedef struct consumer     consumer_t;
-typedef struct pipe_generic pipe_generic_t;
+typedef struct pipe          pipe_t;
+typedef struct pipe_producer pipe_producer_t;
+typedef struct pipe_consumer pipe_consumer_t;
+typedef struct pipe_generic  pipe_generic_t;
 
 #define PIPE_GENERIC(handle) ((pipe_generic_t*)(handle))
 
@@ -152,13 +152,13 @@ pipe_t* MALLOC_LIKE WARN_UNUSED_RESULT pipe_new(size_t elem_size, size_t limit);
  * Makes a production handle to the pipe, allowing push operations. This
  * function is extremely cheap: it doesn't allocate memory.
  */
-producer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_producer_new(pipe_t*);
+pipe_producer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_producer_new(pipe_t*);
 
 /*
  * Makes a consumption handle to the pipe, allowing pop operations. This
  * function is extremely cheap: it doesn't allocate memory.
  */
-consumer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_consumer_new(pipe_t*);
+pipe_consumer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_consumer_new(pipe_t*);
 
 /*
  * If you call *_new, you must call the corresponding *_free. Failure to do so
@@ -166,11 +166,11 @@ consumer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_consumer_new(pipe_t*);
  */
 
 void pipe_free(pipe_t*);
-void pipe_producer_free(producer_t*);
-void pipe_consumer_free(consumer_t*);
+void pipe_producer_free(pipe_producer_t*);
+void pipe_consumer_free(pipe_consumer_t*);
 
 /* Copies `count' elements from `elems' into the pipe. */
-void NO_NULL_POINTERS pipe_push(producer_t*, const void* elems, size_t count);
+void NO_NULL_POINTERS pipe_push(pipe_producer_t*, const void* elems, size_t count);
 
 /*
  * Tries to pop `count' elements out of the pipe and into `target', returning
@@ -182,7 +182,7 @@ void NO_NULL_POINTERS pipe_push(producer_t*, const void* elems, size_t count);
  * If this function returns 0, there will be no more elements coming in. Every
  * subsequent call will return 0.
  */
-size_t NO_NULL_POINTERS pipe_pop(consumer_t*, void* target, size_t count);
+size_t NO_NULL_POINTERS pipe_pop(pipe_consumer_t*, void* target, size_t count);
 
 /*
  * Modifies the pipe to have room for at least `count' elements. If more room

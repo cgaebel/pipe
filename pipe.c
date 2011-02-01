@@ -23,13 +23,18 @@
 #include "pipe.h"
 
 #include <assert.h>
-#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Vanity bytes. As long as this isn't removed from the executable, I don't
+// mind if I don't get credits in a README or any other documentation. Consider
+// this your fulfillment of the MIT license.
+const char _pipe_copyright[] =
+    __FILE__
+    " : Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com> (MIT License)";
 
 #ifndef min
 #define min(a, b) ((a) <= (b) ? (a) : (b))
@@ -41,7 +46,7 @@
 
 #ifdef __GNUC__
 #define likely(cond)   __builtin_expect(!!(cond), 1)
-#define unlikely(cond) __builtin_expect(!!(cond), 0)
+#define unlikely(cond) __builtin_expect(  (cond), 0)
 #define CONSTEXPR __attribute__((const))
 #else
 #define likely(cond)   (cond)
@@ -145,7 +150,7 @@ struct pipe {
 };
 
 // Converts a pointer to either a producer or consumer into a suitable pipe_t*.
-#define PIPIFY(producer_or_consumer) ((pipe_t*)(producer_or_consumer))
+#define PIPIFY(handle) ((pipe_t*)(handle))
 
 // The initial minimum capacity of the pipe. This can be overridden dynamically
 // with pipe_reserve.
@@ -172,13 +177,8 @@ static inline bool wraps_around(const pipe_t* p)
 
 #define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
 
-// Is the pointer `p' within [left, right]?
-static inline bool CONSTEXPR in_bounds(const void* left,
-                                       const void* p,
-                                       const void* right)
-{
-    return p >= left && p <= right;
-}
+// Is `x' within [left, right]?
+#define in_bounds(left, x, right) ((x) >= (left) && (x) <= (right))
 
 static size_t CONSTEXPR next_pow2(size_t n)
 {
@@ -200,7 +200,7 @@ static size_t CONSTEXPR next_pow2(size_t n)
     //   http://bits.stephan-brumme.com/roundUpToNextPowerOfTwo.html
     n--;
 
-    for(size_t shift = 1; shift < sizeof(size_t)*CHAR_BIT; shift <<= 1)
+    for(size_t shift = 1; shift < sizeof(size_t)*8; shift <<= 1)
         n |= n >> shift;
 
     n++;
@@ -244,9 +244,8 @@ static void check_invariants(const pipe_t* p)
     assert(in_bounds(p->buffer, p->begin, p->bufend));
     assert(in_bounds(p->buffer, p->end, p->bufend));
 
-    assert(p->min_cap >= DEFAULT_MINCAP);
-    assert(p->min_cap <= p->max_cap);
-    assert(p->capacity >= p->min_cap && p->capacity <= p->max_cap);
+    assert(in_bounds(DEFAULT_MINCAP, p->min_cap, p->max_cap));
+    assert(in_bounds(p->min_cap, p->capacity, p->max_cap));
 
     assert(p->begin != p->bufend
             && "The begin pointer should NEVER point to the end of the buffer."
@@ -254,7 +253,6 @@ static void check_invariants(const pipe_t* p)
 
     // Ensure the size accurately reflects the begin/end pointers' positions.
     // Kindly refer to the diagram in struct pipe's documentation =)
-
     if(wraps_around(p))
         assert(p->elem_size*p->elem_count ==
         //            v    left half     v   v     right half     v
@@ -285,7 +283,7 @@ static inline void unlock_pipe(pipe_t* p)
 }
 
 // runs some code while automatically locking and unlocking the pipe. If `break'
-// is used, the macro will be broken out of after unlocking.
+// is used, the pipe will be unlocked before control returns out of the macro.
 #define WHILE_LOCKED(stuff) do { lock_pipe(p); stuff; } while(0); unlock_pipe(p)
 
 pipe_t* pipe_new(size_t elem_size, size_t limit)
@@ -326,24 +324,20 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     return p;
 }
 
-// Yes, this is a total hack. What of it?
-//
-// What we do after incrementing the refcount is casting our pipe to the
-// appropriate handle. Since the handle is defined with pipe_t as the
-// first member (therefore lying at offset 0), we can secretly pass around
-// our pipe_t structure without the rest of the world knowing it. This also
-// keeps us from needlessly mallocing (and subsequently freeing) handles.
-#define DEF_NEW_FUNC(type)                     \
-    type##_t* pipe_##type##_new(pipe_t* p)     \
-    {                                          \
-        WHILE_LOCKED( ++p->type##_refcount; ); \
-        return (type##_t*)p;                   \
-    }
+// Instead of allocating a special handle, the pipe_*_new() functions just
+// return the original pipe, cast into a user-friendly form. This saves needless
+// malloc calls. Also, since we have to refcount anyways, it's free.
+pipe_producer_t* pipe_producer_new(pipe_t* p)
+{
+    WHILE_LOCKED( ++p->producer_refcount; );
+    return (pipe_producer_t*)p;
+}
 
-DEF_NEW_FUNC(producer)
-DEF_NEW_FUNC(consumer)
-
-#undef DEF_NEW_FUNC
+pipe_consumer_t* pipe_consumer_new(pipe_t* p)
+{
+    WHILE_LOCKED( ++p->consumer_refcount; );
+    return (pipe_consumer_t*)p;
+}
 
 static inline bool requires_deallocation(const pipe_t* p)
 {
@@ -396,9 +390,9 @@ void pipe_free(pipe_t* p)
     pthread_cond_broadcast(&p->just_popped);
 }
 
-void pipe_producer_free(producer_t* handle)
+void pipe_producer_free(pipe_producer_t* handle)
 {
-    pipe_t *restrict p = PIPIFY(handle);
+    pipe_t* p = PIPIFY(handle);
 
     WHILE_LOCKED(
         check_invariants(p);
@@ -416,9 +410,9 @@ void pipe_producer_free(producer_t* handle)
     pthread_cond_broadcast(&p->just_pushed);
 }
 
-void pipe_consumer_free(consumer_t* handle)
+void pipe_consumer_free(pipe_consumer_t* handle)
 {
-    pipe_t *restrict p = PIPIFY(handle);
+    pipe_t* p = PIPIFY(handle);
 
     WHILE_LOCKED(
         check_invariants(p);
@@ -477,12 +471,12 @@ static void resize_buffer(pipe_t* p, size_t new_size)
                  elem_count = p->elem_count;
 
     // Let's NOT resize beyond our maximum capcity. Thanks =)
-    if(new_size >= max_cap)
+    if(unlikely(new_size >= max_cap))
         new_size = max_cap;
 
     // I refuse to resize to a size smaller than what would keep all our
     // elements in the buffer or one that is smaller than the minimum capacity.
-    if(new_size <= elem_count || new_size < min_cap)
+    if(unlikely(new_size <= elem_count) || new_size < min_cap)
         return;
 
     char* new_buf = malloc(new_size * elem_size);
@@ -526,6 +520,7 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     // buffers, which can be dealt with using a single offset_memcpy.
     if(!wraps_around(p))
     {
+        assert(bufend >= end);
         size_t at_end = min(bytes_to_copy, (size_t)(bufend - end));
 
         WRAP_PTR_IF_NECESSARY(end);
@@ -549,7 +544,7 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     check_invariants(p);
 }
 
-void pipe_push(producer_t* prod, const void* elems, size_t count)
+void pipe_push(pipe_producer_t* prod, const void* elems, size_t count)
 {
     pipe_t* p = PIPIFY(prod);
 
@@ -566,7 +561,7 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
         size_t consumer_refcount = p->consumer_refcount;
 
         // Wait for there to be enough room in the buffer for some new elements.
-        for(; elem_count == max_cap && consumer_refcount > 0;
+        for(; unlikely(elem_count == max_cap) && likely(consumer_refcount > 0);
               elem_count        = p->elem_count,
               consumer_refcount = p->consumer_refcount)
             pthread_cond_wait(&p->just_popped, &p->m);
@@ -589,16 +584,14 @@ void pipe_push(producer_t* prod, const void* elems, size_t count)
 
     (pushed == 1 ? pthread_cond_signal : pthread_cond_broadcast)(&p->just_pushed);
 
-    size_t remaining = count - pushed;
+    size_t elems_remaining = count - pushed;
 
-    if(likely(remaining == 0))
-        return;
-
-    // now get the rest of the elements, which we didn't have enough room for
-    // in the pipe.
-    pipe_push(prod,
-              (const char*)elems + pushed * elem_size,
-              remaining);
+    // If we have any elements left, push them!
+    if(unlikely(elems_remaining))
+    {
+        elems = (const char*)elems + pushed*elem_size;
+        pipe_push(prod, elems, elems_remaining);
+    }
 }
 
 // wow, I didn't even intend for the name to work like that...
@@ -625,6 +618,7 @@ static inline size_t pop_without_locking(pipe_t* p,
 
 //  Copy [begin, min(bufend, begin + bytes_to_copy)) into target.
     {
+        assert(bufend >= begin);
         // Copy either as many bytes as requested, or the available bytes in
         // the RHS of a wrapped buffer - whichever is smaller.
         size_t first_bytes_to_copy = min(bytes_remaining, (size_t)(bufend - begin));
@@ -670,7 +664,7 @@ static inline size_t pop_without_locking(pipe_t* p,
     return elems_to_copy;
 }
 
-size_t pipe_pop(consumer_t* c, void* target, size_t requested)
+size_t pipe_pop(pipe_consumer_t* c, void* target, size_t requested)
 {
     pipe_t* p = PIPIFY(c);
 
@@ -680,11 +674,11 @@ size_t pipe_pop(consumer_t* c, void* target, size_t requested)
         size_t elem_count = p->elem_count;
 
         // While we need more elements and there exists at least one producer...
-        for(; elem_count == 0 && p->producer_refcount > 0;
+        for(; elem_count == 0 && likely(p->producer_refcount > 0);
               elem_count = p->elem_count)
             pthread_cond_wait(&p->just_pushed, &p->m);
 
-        if(elem_count == 0)
+        if(unlikely(elem_count == 0))
             break;
 
         popped = pop_without_locking(p, target, requested);
@@ -714,7 +708,7 @@ void pipe_reserve(pipe_generic_t* gen, size_t count)
     size_t max_cap = p->max_cap;
 
     WHILE_LOCKED(
-        if(count <= p->elem_count)
+        if(unlikely(count <= p->elem_count))
             break;
 
         p->min_cap = min(count, max_cap);

@@ -16,10 +16,10 @@ pipeline_t pipe_trivial_pipeline(pipe_t* p)
 #define DEFAULT_BUFFER_SIZE     128
 
 typedef struct {
-    consumer_t* in;
+    pipe_consumer_t* in;
     pipe_processor_t proc;
     void* aux;
-    producer_t* out;
+    pipe_producer_t* out;
 } connect_data_t;
 
 static void* process_pipe(void* param)
@@ -44,9 +44,9 @@ static void* process_pipe(void* param)
     return NULL;
 }
 
-void pipe_connect(consumer_t* in,
+void pipe_connect(pipe_consumer_t* in,
                   pipe_processor_t proc, void* aux,
-                  producer_t* out)
+                  pipe_producer_t* out)
 {
     assert(in);
     assert(out);
