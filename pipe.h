@@ -182,7 +182,9 @@ void NO_NULL_POINTERS pipe_push(pipe_producer_t*, const void* elems, size_t coun
  * If this function returns 0, there will be no more elements coming in. Every
  * subsequent call will return 0.
  */
-size_t NO_NULL_POINTERS pipe_pop(pipe_consumer_t*, void* target, size_t count);
+size_t NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_pop(pipe_consumer_t*,
+                                                    void* target,
+                                                    size_t count);
 
 /*
  * Modifies the pipe to have room for at least `count' elements. If more room

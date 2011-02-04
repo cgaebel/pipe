@@ -1,7 +1,7 @@
 /*
  * The MIT License
  * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
@@ -23,7 +23,6 @@
 #include "pipe.h"
 
 #include <assert.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -63,6 +62,64 @@ static inline void* offset_memcpy(void* restrict dest,
     memcpy(dest, src, n);
     return (char*)dest + n;
 }
+
+// The number of spins to do before performing an expensive kernel-mode context
+// switch. This is a nice easy value to tweak for your application's needs. Set
+// it to 0 if you want the implementation to decide, a low number if you are
+// copying many objects into pipes at once (or a few large objects), and a high
+// number if you are coping small or few objects into pipes at once.
+#define MUTEX_SPINS 4096
+
+// Standard threading stuff. This lets us support simple synchronization
+// primitives on multiple platforms painlessly.
+//
+#ifdef _MSC_VER // TODO: I need a better "windows test"!
+
+#include <windows.h>
+
+#define mutex_t CRITICAL_SECTION
+#define cond_t  CONDITION_VARIABLE
+
+#ifdef NDEBUG
+    #define mutex_init(m)   InitializeCriticalSectionEx((m),    \
+                                MUTEX_SPINS,                    \
+                                CRITICAL_SECTION_NO_DEBUG_INFO)
+#else
+    #define mutex_init(m)   InitializeCriticalSectionAndSpinCount((m), MUTEX_SPINS)
+#endif
+
+#define mutex_lock          EnterCriticalSection
+#define mutex_unlock        LeaveCriticalSection
+#define mutex_destroy(m)
+
+#define cond_init           InitializeConditionVariable
+#define cond_signal         WakeConditionVariable
+#define cond_broadcast      WakeAllConditionVariable
+#define cond_wait(c, m)     SleepConditionVariableCS((c), (m), INFINITE)
+#define cond_destroy(c)
+
+#else
+
+#include <pthread.h>
+
+#define mutex_t pthread_mutex_t
+#define cond_t  pthread_cond_t
+
+// TODO: How do I set the spin count?
+#define mutex_init(m)  pthread_mutex_init((m), NULL)
+#define mutex_lock     pthread_mutex_lock
+#define mutex_unlock   pthread_mutex_unlock
+#define mutex_destroy  pthread_mutex_destroy
+
+#define cond_init(c)   pthread_cond_init((c), NULL)
+#define cond_signal    pthread_cond_signal
+#define cond_broadcast pthread_cond_broadcast
+#define cond_wait      pthread_cond_wait
+#define cond_destroy   pthread_cond_destroy
+
+#endif
+
+// End threading.
 
 /*
  * Pipe implementation overview
@@ -142,11 +199,11 @@ struct pipe {
     size_t producer_refcount,      // The number of producers in circulation.
            consumer_refcount;      // The number of consumers in circulation.
 
-    pthread_mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
-                                   // coarse-grained locking.
+    mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
+                           // coarse-grained locking.
 
-    pthread_cond_t  just_pushed,   // Signaled immediately after any push operation.
-                    just_popped;   // Signaled immediately after any pop operation.
+    cond_t  just_pushed,   // Signaled immediately after any push operation.
+            just_popped;   // Signaled immediately after any pop operation.
 };
 
 // Converts a pointer to either a producer or consumer into a suitable pipe_t*.
@@ -262,24 +319,16 @@ static void check_invariants(const pipe_t* p)
           (uintptr_t)(p->end - p->begin));
 }
 
-// Enforce is just assert, but runs the expression in release build, instead of
-// filtering it out like assert would.
-#ifdef NDEBUG
-#define ENFORCE(expr) (void)(expr)
-#else
-#define ENFORCE assert
-#endif
-
 static inline void lock_pipe(pipe_t* p)
 {
-    ENFORCE(pthread_mutex_lock(&p->m) == 0);
+    mutex_lock(&p->m);
     check_invariants(p);
 }
 
 static inline void unlock_pipe(pipe_t* p)
 {
     check_invariants(p);
-    ENFORCE(pthread_mutex_unlock(&p->m) == 0);
+    mutex_unlock(&p->m);
 }
 
 // runs some code while automatically locking and unlocking the pipe. If `break'
@@ -312,12 +361,11 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
         // refcounts both start at 1; not the intuitive 0.
         .producer_refcount = 1,
         .consumer_refcount = 1,
-
-        .m = PTHREAD_MUTEX_INITIALIZER,
-
-        .just_pushed = PTHREAD_COND_INITIALIZER,
-        .just_popped = PTHREAD_COND_INITIALIZER
     };
+
+    mutex_init(&p->m);
+    cond_init(&p->just_pushed);
+    cond_init(&p->just_popped);
 
     check_invariants(p);
 
@@ -349,22 +397,18 @@ static inline void deallocate(pipe_t* p)
     assert(p->producer_refcount == 0);
     assert(p->consumer_refcount == 0);
 
-    pthread_mutex_unlock(&p->m);
+    mutex_unlock(&p->m);
 
-    pthread_mutex_destroy(&p->m);
+    mutex_destroy(&p->m);
 
-    pthread_cond_destroy(&p->just_pushed);
-    pthread_cond_destroy(&p->just_popped);
+    cond_destroy(&p->just_pushed);
+    cond_destroy(&p->just_popped);
 
     free(p->buffer);
     free(p);
 }
 
-static inline void* x_free(void* p)
-{
-    free(p);
-    return NULL;
-}
+#define x_free(p) (free(p), NULL)
 
 void pipe_free(pipe_t* p)
 {
@@ -386,8 +430,8 @@ void pipe_free(pipe_t* p)
         }
     );
 
-    pthread_cond_broadcast(&p->just_pushed);
-    pthread_cond_broadcast(&p->just_popped);
+    cond_broadcast(&p->just_pushed);
+    cond_broadcast(&p->just_popped);
 }
 
 void pipe_producer_free(pipe_producer_t* handle)
@@ -407,7 +451,7 @@ void pipe_producer_free(pipe_producer_t* handle)
         }
     );
 
-    pthread_cond_broadcast(&p->just_pushed);
+    cond_broadcast(&p->just_pushed);
 }
 
 void pipe_consumer_free(pipe_consumer_t* handle)
@@ -434,12 +478,12 @@ void pipe_consumer_free(pipe_consumer_t* handle)
 
     // This just ensures any waiting pushers get woken up. We don't want them
     // waiting forever for the last consumer out of the gate!
-    pthread_cond_broadcast(&p->just_popped);
+    cond_broadcast(&p->just_popped);
 }
 
 // Returns the end of the buffer (buf + number_of_bytes_copied).
 static inline char* copy_pipe_into_new_buf(const pipe_t* p,
-                                           char* buf)
+                                           char* restrict buf)
 {
     check_invariants(p);
 
@@ -492,7 +536,9 @@ static void resize_buffer(pipe_t* p, size_t new_size)
     check_invariants(p);
 }
 
-static inline void push_without_locking(pipe_t* p, const void* elems, size_t count)
+static inline void push_without_locking(pipe_t* p,
+                                        const void* restrict elems,
+                                        size_t count)
 {
     check_invariants(p);
     assert(count != 0);
@@ -544,7 +590,7 @@ static inline void push_without_locking(pipe_t* p, const void* elems, size_t cou
     check_invariants(p);
 }
 
-void pipe_push(pipe_producer_t* prod, const void* elems, size_t count)
+void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
 {
     pipe_t* p = PIPIFY(prod);
 
@@ -564,7 +610,7 @@ void pipe_push(pipe_producer_t* prod, const void* elems, size_t count)
         for(; unlikely(elem_count == max_cap) && likely(consumer_refcount > 0);
               elem_count        = p->elem_count,
               consumer_refcount = p->consumer_refcount)
-            pthread_cond_wait(&p->just_popped, &p->m);
+            cond_wait(&p->just_popped, &p->m);
 
         // Don't perform an actual push if we have no consumers issued. The
         // buffer's been freed.
@@ -582,7 +628,7 @@ void pipe_push(pipe_producer_t* prod, const void* elems, size_t count)
 
     assert(pushed > 0);
 
-    (pushed == 1 ? pthread_cond_signal : pthread_cond_broadcast)(&p->just_pushed);
+    (pushed == 1 ? cond_signal : cond_broadcast)(&p->just_pushed);
 
     size_t elems_remaining = count - pushed;
 
@@ -664,7 +710,7 @@ static inline size_t pop_without_locking(pipe_t* p,
     return elems_to_copy;
 }
 
-size_t pipe_pop(pipe_consumer_t* c, void* target, size_t requested)
+size_t pipe_pop(pipe_consumer_t* c, void* restrict target, size_t requested)
 {
     pipe_t* p = PIPIFY(c);
 
@@ -676,7 +722,7 @@ size_t pipe_pop(pipe_consumer_t* c, void* target, size_t requested)
         // While we need more elements and there exists at least one producer...
         for(; elem_count == 0 && likely(p->producer_refcount > 0);
               elem_count = p->elem_count)
-            pthread_cond_wait(&p->just_pushed, &p->m);
+            cond_wait(&p->just_pushed, &p->m);
 
         if(unlikely(elem_count == 0))
             break;
@@ -687,7 +733,7 @@ size_t pipe_pop(pipe_consumer_t* c, void* target, size_t requested)
     if(unlikely(!popped))
         return 0;
 
-    (popped == 1 ? pthread_cond_signal : pthread_cond_broadcast)(&p->just_popped);
+    (popped == 1 ? cond_signal : cond_broadcast)(&p->just_popped);
 
     return popped +
         pipe_pop(c, (char*)target + popped*p->elem_size, requested - popped);
