@@ -1,9 +1,27 @@
 #include "pipe_util.h"
 
 #include <assert.h>
-#include <pthread.h>
 #include <stdarg.h>
 #include <stdlib.h>
+
+// TODO: I need a better "windows test".
+#ifdef _MSC_VER
+
+#include <windows.h>
+
+#define thread_create(f, p) CloseHandle(CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)(f), (p), 0, NULL))
+
+#else
+
+#include <pthread.h>
+
+static inline void thread_create(void *(*f) (void*), void* p)
+{
+    pthread_t t;
+    pthread_create(&t, NULL, f, p);
+}
+
+#endif
 
 pipeline_t pipe_trivial_pipeline(pipe_t* p)
 {
@@ -61,8 +79,7 @@ void pipe_connect(pipe_consumer_t* in,
         .out = out
     };
 
-    pthread_t t;
-    pthread_create(&t, NULL, &process_pipe, d);
+    thread_create(&process_pipe, d);
 }
 
 pipeline_t pipe_parallel(size_t           instances,
