@@ -4,14 +4,19 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
-// TODO: I need a better "windows test".
-#ifdef _MSC_VER
+#ifdef _WIN32 // use the native win32 API on Windows
 
 #include <windows.h>
 
-#define thread_create(f, p) CloseHandle(CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)(f), (p), 0, NULL))
+#define thread_create(f, p) CloseHandle(            \
+        CreateThread(NULL,                          \
+                     0,                             \
+                     (LPTHREAD_START_ROUTINE)(f),   \
+                     (p),                           \
+                     0,                             \
+                     NULL))
 
-#else
+#else // fall back on pthreads
 
 #include <pthread.h>
 

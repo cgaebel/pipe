@@ -72,8 +72,8 @@ static inline void* offset_memcpy(void* restrict dest,
 
 // Standard threading stuff. This lets us support simple synchronization
 // primitives on multiple platforms painlessly.
-//
-#ifdef _MSC_VER // TODO: I need a better "windows test"!
+
+#ifdef _WIN32 // use the native win32 API on windows
 
 #include <windows.h>
 
@@ -98,7 +98,7 @@ static inline void* offset_memcpy(void* restrict dest,
 #define cond_wait(c, m)     SleepConditionVariableCS((c), (m), INFINITE)
 #define cond_destroy(c)
 
-#else
+#else // fall back on pthreads
 
 #include <pthread.h>
 
