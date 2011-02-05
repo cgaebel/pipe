@@ -79,16 +79,9 @@ static inline void* offset_memcpy(void* restrict dest,
 
 #define mutex_t CRITICAL_SECTION
 
-#ifdef NDEBUG
-    #define mutex_init(m)   InitializeCriticalSectionEx((m),    \
-                                MUTEX_SPINS,                    \
-                                CRITICAL_SECTION_NO_DEBUG_INFO)
-#else
-    #define mutex_init(m)   InitializeCriticalSectionAndSpinCount((m), MUTEX_SPINS)
-#endif
-
-#define mutex_lock          EnterCriticalSection
-#define mutex_unlock        LeaveCriticalSection
+#define mutex_init(m)    InitializeCriticalSectionAndSpinCount((m), MUTEX_SPINS)
+#define mutex_lock       EnterCriticalSection
+#define mutex_unlock     LeaveCriticalSection
 #define mutex_destroy(m)
 
 // On vista+, we have native condition variables. Yay.
