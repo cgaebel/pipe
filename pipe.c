@@ -97,7 +97,7 @@ static inline void* offset_memcpy(void* restrict dest,
 
 // Oh god. Microsoft doesn't have native condition variables on anything lower
 // than Vista. Time to roll our own...
-#else
+#else /* vista+ */
 
 typedef volatile LONG atomic_t;
 
@@ -111,9 +111,10 @@ typedef struct {
     HANDLE events[MAX_EVENTS];
 
     atomic_t* waiters;
-    char waiters_buffer[sizeof(atomic_t) + 3];
-} cond_t;
-
+    char waiters_buffer[sizeof(atomic_t) + 3]; // never refer to this directly!
+                                               // Use waiters, which points to
+} cond_t;                                      // the correct spot in the
+                                               // buffer to maintain alignment.
 static inline void cond_init(cond_t* c)
 {
     *c = (cond_t) {
@@ -123,8 +124,7 @@ static inline void cond_init(cond_t* c)
 
     // Guarantees alignment on a 32-bit boundary, as required by windows
     // interlocked operations.
-    c->waiters = (volatile atomic_t*)
-                   ((uintptr_t)(c->waiters_buffer + 3) & ~(uintptr_t)3);
+    c->waiters = (atomic_t*)((uintptr_t)(c->waiters_buffer + 3) & ~3u);
 
     *c->waiters = 0;
 }
@@ -168,18 +168,30 @@ static inline void cond_destroy(cond_t* c)
         CloseHandle(c->events[i]);
 }
 
-#endif
+#endif /* vista+ */
 
-#else // fall back on pthreads if we havn't special-cased the current operating system
+// fall back on pthreads if we havn't special-cased the current operating system
+#else /* windows */
 
 #include <pthread.h>
 
 #define mutex_t pthread_mutex_t
 #define cond_t  pthread_cond_t
 
-// TODO: How do I set the spin count?
 #define mutex_init(m)  pthread_mutex_init((m), NULL)
-#define mutex_lock     pthread_mutex_lock
+
+// Since we can't use condition variables on spinlocks, we'll roll our own spinlocks
+// out of trylocks! This gave me a 25% improvement in the execution speed of the
+// test suite.
+static void mutex_lock(mutex_t* m)
+{
+    for(size_t i = 0; i < MUTEX_SPINS; ++i)
+        if(pthread_mutex_trylock(m) == 0)
+            return;
+
+    pthread_mutex_lock(m);
+}
+
 #define mutex_unlock   pthread_mutex_unlock
 #define mutex_destroy  pthread_mutex_destroy
 
@@ -189,7 +201,7 @@ static inline void cond_destroy(cond_t* c)
 #define cond_wait      pthread_cond_wait
 #define cond_destroy   pthread_cond_destroy
 
-#endif
+#endif /* windows */
 
 // End threading.
 
