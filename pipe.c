@@ -101,17 +101,16 @@ static inline void* offset_memcpy(void* restrict dest,
 
 typedef volatile LONG atomic_t;
 
-typedef struct {
-    enum
-    {
-        SIGNAL,
-        BROADCAST,
-        MAX_EVENTS
-    };
+typedef enum {
+    SIGNAL,
+    BROADCAST,
+    MAX_EVENTS
+} event_types_t;
 
+typedef struct {
     HANDLE events[MAX_EVENTS];
 
-    volatile atomic_t* waiters;
+    atomic_t* waiters;
     char waiters_buffer[sizeof(atomic_t) + 3];
 } cond_t;
 
