@@ -355,8 +355,7 @@ static size_t CONSTEXPR next_pow2(size_t n)
 // documentation. Code AND documentation? What is this witchcraft?
 static void check_invariants(const pipe_t* p)
 {
-    // Give me valid pointers or give me death!
-    assert(p); if(p == NULL) return;
+    if(p == NULL) return;
 
     // p->buffer may be NULL. When it is, we must have no issued consumers.
     // It's just a way to save memory when we've deallocated all consumers
