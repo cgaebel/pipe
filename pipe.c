@@ -158,7 +158,7 @@ static inline void cond_wait(cond_t* c, mutex_t* m)
 
     mutex_unlock(m);
 
-    DWORD res = WaitForMultipleObjects(MAX_EVENTS, c->events, FALSE, INFINITE);
+    DWORD result = WaitForMultipleObjects(MAX_EVENTS, c->events, FALSE, INFINITE);
 
     bool last_waiter = (InterlockedDecrement(c->waiters) == 0);
 
