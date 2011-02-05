@@ -131,7 +131,8 @@ static inline void cond_init(cond_t* c)
 
     // Guarantees alignment on a 32-bit boundary, as required by windows
     // interlocked operations.
-    waiters = (volatile atomic_t*)((uintptr_t)(c->waiters_buffer + 3) & ~3);
+    waiters = (volatile atomic_t*)
+                ((uintptr_t)(c->waiters_buffer + 3) & ~(uintptr_t)3);
 
     *waiters = 0;
 }
