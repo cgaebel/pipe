@@ -356,7 +356,7 @@ static size_t CONSTEXPR next_pow2(size_t n)
 static void check_invariants(const pipe_t* p)
 {
     // Give me valid pointers or give me death!
-    assert(p);
+    assert(p); if(p == NULL) return;
 
     // p->buffer may be NULL. When it is, we must have no issued consumers.
     // It's just a way to save memory when we've deallocated all consumers
@@ -422,6 +422,9 @@ static inline void unlock_pipe(pipe_t* p)
 pipe_t* pipe_new(size_t elem_size, size_t limit)
 {
     assert(elem_size != 0);
+
+    if(elem_size == 0)
+        return NULL;
 
     pipe_t* p = malloc(sizeof(pipe_t));
 
