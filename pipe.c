@@ -56,10 +56,8 @@ const char _pipe_copyright[] =
 #ifdef NDEBUG
     #if defined(_MSC_VER)
         #define assertume __assume
-    #elif defined(__GNUC__)
-        #define assertume(e) do { if(!(e)) __builtin_unreachable(); } while(0)
     #else // _MSC_VER
-        #define asesrtume(e) assert
+        #define assertume assert
     #endif // _MSC_VER
 #else // NDEBUG
     #define assertume assert
@@ -367,7 +365,7 @@ static size_t CONSTEXPR next_pow2(size_t n)
 // use it? This function checks them, and is called liberally through the
 // codebase. It would be best to read this function over, as it also acts as
 // documentation. Code AND documentation? What is this witchcraft?
-static void check_invariants(const pipe_t* p)
+static inline void check_invariants(const pipe_t* p)
 {
     if(p == NULL) return;
 
