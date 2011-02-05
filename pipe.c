@@ -68,7 +68,7 @@ static inline void* offset_memcpy(void* restrict dest,
 // it to 0 if you want the implementation to decide, a low number if you are
 // copying many objects into pipes at once (or a few large objects), and a high
 // number if you are coping small or few objects into pipes at once.
-#define MUTEX_SPINS 4096
+#define MUTEX_SPINS 8192
 
 // Standard threading stuff. This lets us support simple synchronization
 // primitives on multiple platforms painlessly.
@@ -78,7 +78,6 @@ static inline void* offset_memcpy(void* restrict dest,
 #include <windows.h>
 
 #define mutex_t CRITICAL_SECTION
-#define cond_t  CONDITION_VARIABLE
 
 #ifdef NDEBUG
     #define mutex_init(m)   InitializeCriticalSectionEx((m),    \
@@ -92,13 +91,93 @@ static inline void* offset_memcpy(void* restrict dest,
 #define mutex_unlock        LeaveCriticalSection
 #define mutex_destroy(m)
 
+// On vista+, we have native condition variables. Yay.
+#if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0600
+
+#define cond_t              CONDITION_VARIABLE
+
 #define cond_init           InitializeConditionVariable
 #define cond_signal         WakeConditionVariable
 #define cond_broadcast      WakeAllConditionVariable
 #define cond_wait(c, m)     SleepConditionVariableCS((c), (m), INFINITE)
 #define cond_destroy(c)
 
-#else // fall back on pthreads
+// Oh god. Microsoft doesn't have native condition variables on anything lower
+// than Vista. Time to roll our own...
+#else
+
+typedef volatile LONG atomic_t;
+
+typedef struct {
+    enum
+    {
+        SIGNAL,
+        BROADCAST,
+        MAX_EVENTS
+    };
+
+    HANDLE events[MAX_EVENTS];
+
+    volatile atomic_t* waiters;
+    char waiters_buffer[sizeof(atomic_t) + 3];
+} cond_t;
+
+static inline void cond_init(cond_t* c)
+{
+    *c = (cond_t) {
+        .events[SIGNAL]    = CreateEvent(NULL, FALSE, FALSE, NULL),
+        .events[BROADCAST] = CreateEvent(NULL, TRUE, FALSE, NULL),
+    };
+
+    // Guarantees alignment on a 32-bit boundary, as required by windows
+    // interlocked operations.
+    waiters = (volatile atomic_t*)((uintptr_t)(c->waiters_buffer + 3) & ~3);
+
+    *waiters = 0;
+}
+
+// Is this safe? I'm not really sure. I feel like I need a memory barrier or
+// something...
+static inline void cond_signal(cond_t* c)
+{
+    if(*c->waiters > 0)
+        SetEvent(c->events[SIGNAL]);
+}
+
+// Ditto those safety concerns here.
+static inline void cond_broadcast(cond_t* c)
+{
+    if(*c->waiters > 0)
+        SetEvent(c->events[BROADCAST]);
+}
+
+static inline void cond_wait(cond_t* c, mutex_t* m)
+{
+    InterlockedIncrement(c->waiters);
+
+    mutex_unlock(m);
+
+    DWORD res = WaitForMultipleObjects(MAX_EVENTS, c->events, FALSE, INFINITE);
+
+    bool last_waiter = (InterlockedDecrement(c->waiters) == 0);
+
+    // Some thread called cond_broadcast. We're the last waiter, so reset the
+    // manual event.
+    if(last_waiter && result == (WAIT_OBJECT_0 + BROADCAST))
+        ResetEvent(c->events[BROADCAST]);
+
+    mutex_lock(m);
+}
+
+static inline void cond_destroy(cond_t* c)
+{
+    for(size_t i = 0; i < MAX_EVENTS; ++i)
+        CloseHandle(c->events[i]);
+}
+
+#endif
+
+#else // fall back on pthreads if we havn't special-cased the current operating system
 
 #include <pthread.h>
 
