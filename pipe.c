@@ -53,6 +53,18 @@ const char _pipe_copyright[] =
 #define CONSTEXPR
 #endif
 
+#ifdef NDEBUG
+    #if defined(_MSC_VER)
+        #define assertume __assume
+    #elif defined(__GNUC__)
+        #define assertume(e) do { if(!(e)) __builtin_unreachable(); } while(0)
+    #else // _MSC_VER
+        #define asesrtume(e) assert
+    #endif // _MSC_VER
+#else // NDEBUG
+    #define assertume assert
+#endif // NDEBUG
+
 // Runs a memcpy, then returns the end of the range copied.
 // Has identical functionality as mempcpy, but is portable.
 static inline void* offset_memcpy(void* restrict dest,
@@ -164,7 +176,7 @@ static inline void cond_wait(cond_t* c, mutex_t* m)
 
 static inline void cond_destroy(cond_t* c)
 {
-    for(size_t i = 0; i < MAX_EVENTS; ++i)
+    for(size_t i = 0; i < MAX_EVENTS; i++)
         CloseHandle(c->events[i]);
 }
 
@@ -185,7 +197,9 @@ static inline void cond_destroy(cond_t* c)
 // test suite.
 static void mutex_lock(mutex_t* m)
 {
-    for(size_t i = 0; i < MUTEX_SPINS; ++i)
+    size_t spins = MUTEX_SPINS;
+
+    while(spins--)
         if(pthread_mutex_trylock(m) == 0)
             return;
 
@@ -324,7 +338,7 @@ static inline bool wraps_around(const pipe_t* p)
 static size_t CONSTEXPR next_pow2(size_t n)
 {
     // I don't see why we would even try. Maybe a stacktrace will help.
-    assert(n != 0);
+    assertume(n != 0);
 
     // In binary, top is equal to 10000...0:  A 1 right-padded by as many zeros
     // as needed to fill up a size_t.
@@ -362,43 +376,43 @@ static void check_invariants(const pipe_t* p)
     // and people are still trying to push like idiots.
     if(p->buffer == NULL)
     {
-        assert(p->consumer_refcount == 0);
+        assertume(p->consumer_refcount == 0);
         return;
     }
     else
     {
-        assert(p->consumer_refcount != 0);
+        assertume(p->consumer_refcount != 0);
     }
 
-    assert(p->bufend);
-    assert(p->begin);
-    assert(p->end);
+    assertume(p->bufend);
+    assertume(p->begin);
+    assertume(p->end);
 
-    assert(p->elem_size != 0);
+    assertume(p->elem_size != 0);
 
-    assert(p->elem_count <= p->capacity
+    assertume(p->elem_count <= p->capacity
             && "There are more elements in the buffer than its capacity.");
-    assert(p->bufend == p->buffer + p->elem_size*p->capacity
+    assertume(p->bufend == p->buffer + p->elem_size*p->capacity
             && "This is axiomatic. Was fix_bufend not called somewhere?");
 
-    assert(in_bounds(p->buffer, p->begin, p->bufend));
-    assert(in_bounds(p->buffer, p->end, p->bufend));
+    assertume(in_bounds(p->buffer, p->begin, p->bufend));
+    assertume(in_bounds(p->buffer, p->end, p->bufend));
 
-    assert(in_bounds(DEFAULT_MINCAP, p->min_cap, p->max_cap));
-    assert(in_bounds(p->min_cap, p->capacity, p->max_cap));
+    assertume(in_bounds(DEFAULT_MINCAP, p->min_cap, p->max_cap));
+    assertume(in_bounds(p->min_cap, p->capacity, p->max_cap));
 
-    assert(p->begin != p->bufend
+    assertume(p->begin != p->bufend
             && "The begin pointer should NEVER point to the end of the buffer."
                "If it does, it should have been automatically moved to the front.");
 
     // Ensure the size accurately reflects the begin/end pointers' positions.
     // Kindly refer to the diagram in struct pipe's documentation =)
     if(wraps_around(p))
-        assert(p->elem_size*p->elem_count ==
+        assertume(p->elem_size*p->elem_count ==
         //            v    left half     v   v     right half     v
           (uintptr_t)((p->end - p->buffer) + (p->bufend - p->begin)));
     else
-        assert(p->elem_size*p->elem_count ==
+        assertume(p->elem_size*p->elem_count ==
           (uintptr_t)(p->end - p->begin));
 }
 
@@ -420,7 +434,7 @@ static inline void unlock_pipe(pipe_t* p)
 
 pipe_t* pipe_new(size_t elem_size, size_t limit)
 {
-    assert(elem_size != 0);
+    assertume(elem_size != 0);
 
     if(elem_size == 0)
         return NULL;
@@ -480,8 +494,8 @@ static inline bool requires_deallocation(const pipe_t* p)
 
 static inline void deallocate(pipe_t* p)
 {
-    assert(p->producer_refcount == 0);
-    assert(p->consumer_refcount == 0);
+    assertume(p->producer_refcount == 0);
+    assertume(p->consumer_refcount == 0);
 
     mutex_unlock(&p->m);
 
@@ -499,9 +513,8 @@ static inline void deallocate(pipe_t* p)
 void pipe_free(pipe_t* p)
 {
     WHILE_LOCKED(
-        check_invariants(p);
-        assert(p->producer_refcount > 0);
-        assert(p->consumer_refcount > 0);
+        assertume(p->producer_refcount > 0);
+        assertume(p->consumer_refcount > 0);
 
         --p->producer_refcount;
         --p->consumer_refcount;
@@ -525,8 +538,7 @@ void pipe_producer_free(pipe_producer_t* handle)
     pipe_t* p = PIPIFY(handle);
 
     WHILE_LOCKED(
-        check_invariants(p);
-        assert(p->producer_refcount > 0);
+        assertume(p->producer_refcount > 0);
 
         --p->producer_refcount;
 
@@ -545,8 +557,7 @@ void pipe_consumer_free(pipe_consumer_t* handle)
     pipe_t* p = PIPIFY(handle);
 
     WHILE_LOCKED(
-        check_invariants(p);
-        assert(p->consumer_refcount > 0);
+        assertume(p->consumer_refcount > 0);
 
         --p->consumer_refcount;
 
@@ -597,16 +608,16 @@ static void resize_buffer(pipe_t* p, size_t new_size)
 
     const size_t max_cap    = p->max_cap,
                  min_cap    = p->min_cap,
-                 elem_size  = p->elem_size,
-                 elem_count = p->elem_count;
+                 elem_size  = p->elem_size;
+
+    assertume(new_size >= p->elem_count);
 
     // Let's NOT resize beyond our maximum capcity. Thanks =)
     if(unlikely(new_size >= max_cap))
         new_size = max_cap;
 
-    // I refuse to resize to a size smaller than what would keep all our
-    // elements in the buffer or one that is smaller than the minimum capacity.
-    if(unlikely(new_size <= elem_count) || new_size < min_cap)
+    // I refuse to resize smaller than the minimum capacity!
+    if(new_size < min_cap)
         return;
 
     char* new_buf = malloc(new_size * elem_size);
@@ -627,8 +638,8 @@ static inline void push_without_locking(pipe_t* p,
                                         size_t count)
 {
     check_invariants(p);
-    assert(count != 0);
-    assert(p->elem_count + count <= p->max_cap);
+    assertume(count != 0);
+    assertume(p->elem_count + count <= p->max_cap);
 
     const size_t elem_count = p->elem_count,
                  elem_size  = p->elem_size;
@@ -638,7 +649,7 @@ static inline void push_without_locking(pipe_t* p,
 
     // Since we've just grown the buffer (if necessary), we now KNOW we have
     // enough room for the push. So do it!
-    assert(p->capacity >= elem_count + count);
+    assertume(p->capacity >= elem_count + count);
 
     size_t bytes_to_copy = count*elem_size;
 
@@ -652,7 +663,7 @@ static inline void push_without_locking(pipe_t* p,
     // buffers, which can be dealt with using a single offset_memcpy.
     if(!wraps_around(p))
     {
-        assert(bufend >= end);
+        assertume(bufend >= end);
         size_t at_end = min(bytes_to_copy, (size_t)(bufend - end));
 
         WRAP_PTR_IF_NECESSARY(end);
@@ -712,7 +723,7 @@ void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
         );
     );
 
-    assert(pushed > 0);
+    assertume(pushed > 0);
 
     (pushed == 1 ? cond_signal : cond_broadcast)(&p->just_pushed);
 
@@ -739,7 +750,7 @@ static inline size_t pop_without_locking(pipe_t* p,
     const size_t elems_to_copy   = min(count, elem_count);
           size_t bytes_remaining = elems_to_copy * elem_size;
 
-    assert(bytes_remaining <= elem_count*elem_size);
+    assertume(bytes_remaining <= elem_count*elem_size);
 
     p->elem_count =
        elem_count = elem_count - elems_to_copy;
@@ -750,7 +761,7 @@ static inline size_t pop_without_locking(pipe_t* p,
 
 //  Copy [begin, min(bufend, begin + bytes_to_copy)) into target.
     {
-        assert(bufend >= begin);
+        assertume(bufend >= begin);
         // Copy either as many bytes as requested, or the available bytes in
         // the RHS of a wrapped buffer - whichever is smaller.
         size_t first_bytes_to_copy = min(bytes_remaining, (size_t)(bufend - begin));
