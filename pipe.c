@@ -470,18 +470,25 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     return p;
 }
 
+static inline void increment_refcount(mutex_t* m, size_t* ref)
+{
+    mutex_lock(m);
+    (*ref)++;
+    mutex_unlock(m);
+}
+
 // Instead of allocating a special handle, the pipe_*_new() functions just
 // return the original pipe, cast into a user-friendly form. This saves needless
 // malloc calls. Also, since we have to refcount anyways, it's free.
 pipe_producer_t* pipe_producer_new(pipe_t* p)
 {
-    WHILE_LOCKED( ++p->producer_refcount; );
+    increment_refcount(&p->m, &p->producer_refcount);
     return (pipe_producer_t*)p;
 }
 
 pipe_consumer_t* pipe_consumer_new(pipe_t* p)
 {
-    WHILE_LOCKED( ++p->consumer_refcount; );
+    increment_refcount(&p->m, &p->consumer_refcount);
     return (pipe_consumer_t*)p;
 }
 

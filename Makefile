@@ -3,7 +3,7 @@ CC=gcc
 OBJS=main.c pipe.c pipe_test.c pipe_util.c
 NAME=pipe
 
-CFLAGS=-Wall -Wextra -Wpointer-arith -fstrict-aliasing -std=c99 -pthread -DFORTIFY_SOURCE=2 -pipe -pedantic #-Werror
+CFLAGS=-Wall -Wextra -Wpointer-arith -fstrict-aliasing -std=c99 -DFORTIFY_SOURCE=2 -pipe -pedantic -pthread #-Werror
 D_CFLAGS=-DDEBUG -g -O0
 R_CFLAGS=-DNDEBUG -O3 -funroll-loops #-flto
 
