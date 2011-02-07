@@ -136,6 +136,9 @@ static inline void cond_init(cond_t* c)
     // interlocked operations.
     c->waiters = (atomic_t*)((uintptr_t)(c->waiters_buffer + 3) & ~3u);
 
+    assert((uintptr_t)(c->waiters) % 4 == 0
+            && "Atomic variable must be aligned on 32-bit boundary.");
+
     *c->waiters = 0;
 }
 
@@ -195,9 +198,7 @@ static inline void cond_destroy(cond_t* c)
 // test suite.
 static void mutex_lock(mutex_t* m)
 {
-    size_t spins = MUTEX_SPINS;
-
-    while(spins--)
+    for(size_t i = 0; i < MUTEX_SPINS; ++i)
         if(pthread_mutex_trylock(m) == 0)
             return;
 
