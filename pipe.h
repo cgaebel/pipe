@@ -20,7 +20,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#pragma once
+#pragma once /* If your compiler doesn't support this construct, feel free to
+                use include guards. Most do, so I'm keeping it in. */
+
 #include <stddef.h>
 
 #ifdef __cplusplus
