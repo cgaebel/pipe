@@ -76,6 +76,7 @@ pipe.c has been tested on:
  * GNU/Linux x86-64
  * Windows 7 x64 (Cross-compiled from GNU/Linux with mingw64)
  * Windows 7 (Compiled with mingw)
+ * OSX 10.6
 
 However, there's no reason it shouldn't work on any of the following
 platforms. If you have successfully tested it on any of these, feel free
@@ -96,6 +97,7 @@ gcc 4.2.1
 gcc 4.5.2
 llvm-gcc 4.2.1
 clang 2.8
+clang 1.5 (Darwin)
 icc 12.0
 mingw 4.5.2
 mingw 4.6.0
