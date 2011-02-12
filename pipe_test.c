@@ -48,7 +48,7 @@
 #define DEF_TEST(name) \
     static void test_##name()
 
-#define countof(a) (sizeof(a)/sizeof((a)[0]))
+#define countof(a) (sizeof(a)/sizeof(*(a)))
 
 #define array_eq(a1, a2)              \
     (sizeof(a1) == sizeof(a2)         \
