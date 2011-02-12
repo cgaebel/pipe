@@ -31,15 +31,13 @@ requests will just pile up in the queue to be handled "eventually". If
 memory usage becomes a problem, we can limit the size of the pipe to
 block the producer when the pipe gets too full.
 
-Actually, this solution seems a tad over-engineered. Why bother when we
-already have a construct to do just this: unix pipes. What's the point
-of pipe.c? Because it can do so much more than that! No matter how many
-producers or consumers you have, pipe will behave predictably (although
-not necessarily fairly). Therefore, you can use pipe for serialization,
-pipelining tasks, parallel processing, futures, multiplexing, and so
-much more. It does this extremely quickly, to the point where anything
-except trivial code will be the bottleneck, not the pipe. It can do all
-this and more in under 1000 lines of C!
+Although this sample seems a bit trivial, the pipe is a lot more powerful
+than it lets on. No matter how many producers or consumers you have, pipe
+will behave predictably (although not necessarily fairly). Therefore, you
+can use pipe for serialization, pipelining tasks, parallel processing,
+futures, multiplexing, and so much more. It does this extremely quickly,
+to the point where anything except trivial code will be the bottleneck,
+not the pipe. It can do all this and more in under 1000 lines of C!
 
 My true hope is that this library will spur development of concurrent
 systems in all languages, and the creation of new ideas in the field.
