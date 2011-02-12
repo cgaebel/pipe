@@ -284,9 +284,9 @@ struct pipe_t {
                        // before a reallocation.
            min_cap,    // The smallest sane capacity before the buffer refuses
                        // to shrink because it would just end up growing again.
-           max_cap;    // The maximum capacity (unlimited if zero) of the pipe
-                       // before push requests are blocked. This is read-only
-                       // and therefore does not need to be locked to read.
+           max_cap;    // The maximum capacity of the pipe before push requests
+                       // are blocked. This is read-only and therefore does not
+                       // need to be locked to read.
 
     char * buffer,     // The internal buffer, holding the enqueued elements.
          * bufend,     // Just a shortcut pointer to the end of the buffer.
@@ -405,7 +405,7 @@ static inline void check_invariants(const pipe_t* p)
                "If it does, it should have been automatically moved to the front.");
 
     // Ensure the size accurately reflects the begin/end pointers' positions.
-    // Kindly refer to the diagram in struct pipe's documentation =)
+    // Kindly refer to the diagram in struct pipe_t's documentation =)
     if(wraps_around(p))
         assertume(p->elem_size*p->elem_count ==
         //            v    left half     v   v     right half     v
@@ -524,12 +524,15 @@ static inline void deallocate(pipe_t* p)
 
 void pipe_free(pipe_t* p)
 {
+    size_t new_producer_refcount,
+           new_consumer_refcount;
+
     WHILE_LOCKED(
         assertume(p->producer_refcount > 0);
         assertume(p->consumer_refcount > 0);
 
-        --p->producer_refcount;
-        --p->consumer_refcount;
+        new_producer_refcount = --p->producer_refcount;
+        new_consumer_refcount = --p->consumer_refcount;
 
         if(unlikely(p->consumer_refcount == 0))
             p->buffer = x_free(p->buffer);
@@ -541,18 +544,28 @@ void pipe_free(pipe_t* p)
         }
     );
 
-    cond_broadcast(&p->just_pushed);
-    cond_broadcast(&p->just_popped);
+    // If this was the last "producer" handle issued, we need to wake up the
+    // consumers so they don't spend forever waiting for elements that can never
+    // come.
+    if(new_producer_refcount == 0)
+        cond_broadcast(&p->just_pushed);
+
+    // Same issue for the producers waiting on consumers that don't exist
+    // anymore.
+    if(new_consumer_refcount == 0)
+        cond_broadcast(&p->just_popped);
 }
 
 void pipe_producer_free(pipe_producer_t* handle)
 {
     pipe_t* p = PIPIFY(handle);
 
+    size_t new_producer_refcount;
+
     WHILE_LOCKED(
         assertume(p->producer_refcount > 0);
 
-        --p->producer_refcount;
+        new_producer_refcount = --p->producer_refcount;
 
         if(unlikely(requires_deallocation(p)))
         {
@@ -561,17 +574,20 @@ void pipe_producer_free(pipe_producer_t* handle)
         }
     );
 
-    cond_broadcast(&p->just_pushed);
+    if(new_producer_refcount == 0)
+        cond_broadcast(&p->just_pushed);
 }
 
 void pipe_consumer_free(pipe_consumer_t* handle)
 {
     pipe_t* p = PIPIFY(handle);
 
+    size_t new_consumer_refcount;
+
     WHILE_LOCKED(
         assertume(p->consumer_refcount > 0);
 
-        --p->consumer_refcount;
+        new_consumer_refcount = --p->consumer_refcount;
 
         // If this was the last consumer out of the gate, we can deallocate the
         // buffer. It has no use anymore.
@@ -585,9 +601,8 @@ void pipe_consumer_free(pipe_consumer_t* handle)
         }
     );
 
-    // This just ensures any waiting pushers get woken up. We don't want them
-    // waiting forever for the last consumer out of the gate!
-    cond_broadcast(&p->just_popped);
+    if(new_consumer_refcount == 0)
+        cond_broadcast(&p->just_popped);
 }
 
 // Returns the end of the buffer (buf + number_of_bytes_copied).
@@ -755,11 +770,11 @@ static inline size_t pop_without_locking(pipe_t* p,
 {
     check_invariants(p);
 
-          size_t elem_count = p->elem_count;
-    const size_t elem_size  = p->elem_size;
+    size_t       elem_count = p->elem_count;
+    size_t const elem_size  = p->elem_size;
 
-    const size_t elems_to_copy   = min(count, elem_count);
-          size_t bytes_remaining = elems_to_copy * elem_size;
+    size_t const elems_to_copy   = min(count, elem_count);
+    size_t       bytes_remaining = elems_to_copy * elem_size;
 
     assertume(bytes_remaining <= elem_count*elem_size);
 
