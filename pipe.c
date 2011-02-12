@@ -354,7 +354,7 @@ static size_t CONSTEXPR next_pow2(size_t n)
     //   http://bits.stephan-brumme.com/roundUpToNextPowerOfTwo.html
     n--;
 
-    for(size_t shift = 1; shift < sizeof(size_t)*8; shift <<= 1)
+    for(size_t shift = 1; shift < (sizeof n)*8; shift <<= 1)
         n |= n >> shift;
 
     n++;

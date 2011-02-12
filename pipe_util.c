@@ -98,7 +98,7 @@ void pipe_connect(pipe_consumer_t* in,
     assert(out);
     assert(proc);
 
-    connect_data_t* d = malloc(sizeof(connect_data_t));
+    connect_data_t* d = malloc(sizeof *d);
 
     *d = (connect_data_t) {
         .in = in,
