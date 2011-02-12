@@ -134,10 +134,10 @@ extern "C" {
  *
  * All functions are re-entrant. Synchronization is handled internally.
  */
-typedef struct pipe          pipe_t;
-typedef struct pipe_producer pipe_producer_t;
-typedef struct pipe_consumer pipe_consumer_t;
-typedef struct pipe_generic  pipe_generic_t;
+typedef struct pipe_t          pipe_t;
+typedef struct pipe_producer_t pipe_producer_t;
+typedef struct pipe_consumer_t pipe_consumer_t;
+typedef struct pipe_generic_t  pipe_generic_t;
 
 #define PIPE_GENERIC(handle) ((pipe_generic_t*)(handle))
 

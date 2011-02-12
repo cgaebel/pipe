@@ -276,7 +276,7 @@ static void mutex_lock(mutex_t* m)
  * into no-ops. Therefore, it is recommended that you compile with -O1 in
  * debug builds as the pipe can easily become a bottleneck.
  */
-struct pipe {
+struct pipe_t {
     size_t elem_size,  // The size of each element. This is read-only and
                        // therefore does not need to be locked to read.
            elem_count, // The number of elements currently in the pipe.
@@ -428,8 +428,14 @@ static inline void unlock_pipe(pipe_t* p)
 }
 
 // runs some code while automatically locking and unlocking the pipe. If `break'
-// is used, the pipe will be unlocked before control returns out of the macro.
-#define WHILE_LOCKED(stuff) do { lock_pipe(p); stuff; } while(0); unlock_pipe(p)
+// is used, the pipe will be unlocked before control returns from the macro.
+#define WHILE_LOCKED(stuff) do { \
+    do {                         \
+        lock_pipe(p);            \
+        stuff;                   \
+    } while(0);                  \
+    unlock_pipe(p);              \
+ } while(0)
 
 pipe_t* pipe_new(size_t elem_size, size_t limit)
 {
@@ -438,7 +444,7 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     if(elem_size == 0)
         return NULL;
 
-    pipe_t* p = malloc(sizeof(pipe_t));
+    pipe_t* p = malloc(sizeof *p);
 
     size_t cap = DEFAULT_MINCAP;
     char* buf  = malloc(elem_size * cap);
