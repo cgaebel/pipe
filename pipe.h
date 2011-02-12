@@ -1,4 +1,6 @@
-/*
+/* pipe.h - The public pipe interface. This is the only file that must be
+ *          included to begin using the pipe.
+ *
  * The MIT License
  * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
  *

@@ -1,4 +1,6 @@
-/*
+/* pipe_test.c - The pipe's unit tests. This does not need to be linked unless
+ *               you plan on testing the pipe.
+ *
  * The MIT License
  * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
  * 

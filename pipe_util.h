@@ -1,4 +1,6 @@
-#/*
+/* pipe_util.h - Experimental extensions to the standard pipe interface. The
+ *               "next level up" from the low-level semantics of a pipe.
+ *
  * The MIT License
  * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
  * 

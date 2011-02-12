@@ -1,4 +1,6 @@
-/*
+/* pipe.c - The pipe implementation. This is the only file that must be linked
+ *          to use the pipe.
+ *
  * The MIT License
  * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
  *
