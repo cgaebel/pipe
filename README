@@ -52,6 +52,21 @@ Integration
 2. Get your compiler to build it (pipe.c needs -std=c99)
 3. Use it!
 
+Concurrency Specifications
+---------------------------
+
+For more details on this list, see:
+http://www.1024cores.net/home/lock-free-algorithms/queues
+
+Type of queue: Multi-producer/Multi-consumer
+Underlying data structure: Array-based
+Maximum size: Bounded/Unbounded can be selected at runtime
+Overflow behavior: Block until there is room
+Requirement for garbage collection: None
+Support for priorities: No
+Ordering guarantees: per-producer FIFO
+Behavior on empty queue: Block until elements arrive
+
 Compatibility
 --------------
 
