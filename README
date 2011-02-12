@@ -47,6 +47,13 @@ Since C is so pervasive, I hope to see these concepts leaking into other
 languages and libraries, hopefully being expanded upon and becoming a
 building block of the next generation of concurrent programming.
 
+Integration
+------------
+
+1. Copy pipe.c and pipe.h into your project's directory.
+2. Get your compiler to build it (pipe.c needs -std=c99)
+3. Use it!
+
 Compatibility
 --------------
 
