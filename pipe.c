@@ -333,7 +333,6 @@ static inline bool wraps_around(const pipe_t* p)
 
 #define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
 
-// Is `x' within [left, right]?
 #define in_bounds(left, x, right) ((x) >= (left) && (x) <= (right))
 
 static size_t CONSTEXPR next_pow2(size_t n)
@@ -350,9 +349,8 @@ static size_t CONSTEXPR next_pow2(size_t n)
     if(unlikely(n >= top))
         return n;
 
-    // Therefore, at this point we have something that can be rounded up.
-
-    // We'll use the algorithm documented at:
+    // Since we don't have to worry about overflow anymore, we can just use
+    // the algorithm documented at:
     //   http://bits.stephan-brumme.com/roundUpToNextPowerOfTwo.html
     n--;
 
@@ -476,7 +474,7 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
 static inline void increment_refcount(mutex_t* m, size_t* ref)
 {
     mutex_lock(m);
-    (*ref)++;
+    ++*ref;
     mutex_unlock(m);
 }
 
@@ -620,11 +618,9 @@ static void resize_buffer(pipe_t* p, size_t new_size)
 
     assertume(new_size >= p->elem_count);
 
-    // Let's NOT resize beyond our maximum capcity. Thanks =)
     if(unlikely(new_size >= max_cap))
         new_size = max_cap;
 
-    // I refuse to resize smaller than the minimum capacity!
     if(new_size < min_cap)
         return;
 
@@ -735,9 +731,10 @@ void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
 
     (pushed == 1 ? cond_signal : cond_broadcast)(&p->just_pushed);
 
+    // We might not be done pushing. If the max_cap was reached, we'll need to
+    // recurse.
     size_t elems_remaining = count - pushed;
 
-    // If we have any elements left, push them!
     if(unlikely(elems_remaining))
     {
         elems = (const char*)elems + pushed*elem_size;
@@ -767,11 +764,9 @@ static inline size_t pop_without_locking(pipe_t* p,
         * const bufend = p->bufend,
         *       begin  = p->begin;
 
-//  Copy [begin, min(bufend, begin + bytes_to_copy)) into target.
+    // Copy either as many bytes as requested, or the available bytes in the RHS
+    // of a wrapped buffer - whichever is smaller.
     {
-        assertume(bufend >= begin);
-        // Copy either as many bytes as requested, or the available bytes in
-        // the RHS of a wrapped buffer - whichever is smaller.
         size_t first_bytes_to_copy = min(bytes_remaining, (size_t)(bufend - begin));
 
         target = offset_memcpy(target, begin, first_bytes_to_copy);
