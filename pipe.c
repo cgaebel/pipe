@@ -290,7 +290,7 @@ static inline void fix_bufend(pipe_t* p)
 //   false -> nowrap
 static inline bool wraps_around(const pipe_t* p)
 {
-    return p->begin >= p->end && p->elem_count > 0;
+    return p->begin > p->end;
 }
 
 #define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
@@ -358,6 +358,9 @@ static inline void check_invariants(const pipe_t* p)
 
     assertume(in_bounds(p->buffer, p->begin, p->bufend));
     assertume(in_bounds(p->buffer, p->end, p->bufend));
+
+    if(p->begin == p->end)
+        assert(p->elem_count == 0);
 
     assertume(in_bounds(DEFAULT_MINCAP, p->min_cap, p->max_cap));
     assertume(in_bounds(p->min_cap, p->capacity, p->max_cap));
@@ -626,17 +629,19 @@ static inline void push_without_locking(pipe_t* p,
 {
     check_invariants(p);
     assertume(count != 0);
-    assertume(p->elem_count + count <= p->max_cap);
+    assertume(p->elem_count + count + 1 <= p->max_cap);
 
     const size_t elem_count = p->elem_count,
                  elem_size  = p->elem_size;
 
-    if(unlikely(elem_count + count > p->capacity))
-        resize_buffer(p, next_pow2(elem_count + count));
+    // We add 1 to ensure p->begin != p->end unless p->elem_count == 0,
+    // maintaining one of our invariants.
+    if(unlikely(elem_count + count + 1 > p->capacity))
+        resize_buffer(p, next_pow2(elem_count + count + 1));
 
     // Since we've just grown the buffer (if necessary), we now KNOW we have
     // enough room for the push. So do it!
-    assertume(p->capacity >= elem_count + count);
+    assertume(p->capacity >= elem_count + count + 1);
 
     size_t bytes_to_copy = count*elem_size;
 
@@ -787,8 +792,8 @@ static inline size_t pop_without_locking(pipe_t* p,
     // doesn't get too time-inefficient.
     size_t capacity = p->capacity;
 
-    if(elem_count <=    (capacity / 4))
-        resize_buffer(p, capacity / 2);
+    if(elem_count <= (capacity / 4))
+        resize_buffer(p,  capacity / 2);
 
     return elems_to_copy;
 }
