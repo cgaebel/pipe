@@ -72,10 +72,11 @@ Compatibility
 
 pipe.c has been tested on:
 
- * GNU/Linux i386
+ * GNU/Linux i686
  * GNU/Linux x86-64
  * Windows 7 x64 (Cross-compiled from GNU/Linux with mingw64)
  * Windows 7 (Compiled with mingw)
+ * Windows 7 i686 (Cygwin)
  * OSX 10.6
 
 However, there's no reason it shouldn't work on any of the following
@@ -94,6 +95,7 @@ Supported Compilers:
 Any compiler with C99 support, however, pipe.c has been tested with...
 
 gcc 4.2.1
+gcc 4.3.4 (Cygwin)
 gcc 4.5.2
 llvm-gcc 4.2.1
 clang 2.8
