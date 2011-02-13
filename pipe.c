@@ -89,98 +89,60 @@ static inline void* offset_memcpy(void* restrict dest,
 
 #include <windows.h>
 
-#define mutex_t CRITICAL_SECTION
-
-#define mutex_init(m)    InitializeCriticalSectionAndSpinCount((m), MUTEX_SPINS)
-#define mutex_lock       EnterCriticalSection
-#define mutex_unlock     LeaveCriticalSection
-#define mutex_destroy(m)
-
-// On vista+, we have native condition variables. Yay.
+// On vista+, we have native condition variables and fast locks. Yay.
 #if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0600
+
+#define mutex_t             SRWLOCK
+
+#define mutex_init          InitializeSRWLock
+#define mutex_lock          AcquireSRWLockExclusive
+#define mutex_unlock        ReleaseSRWLockExclusive
+#define mutex_destroy(m)
 
 #define cond_t              CONDITION_VARIABLE
 
 #define cond_init           InitializeConditionVariable
 #define cond_signal         WakeConditionVariable
 #define cond_broadcast      WakeAllConditionVariable
-#define cond_wait(c, m)     SleepConditionVariableCS((c), (m), INFINITE)
+#define cond_wait(c, m)     SleepConditionVariableSRW((c), (m), INFINITE, 0)
 #define cond_destroy(c)
 
-// Oh god. Microsoft doesn't have native condition variables on anything lower
-// than Vista. Time to roll our own...
+// Oh god. Microsoft has slow locks and lacks native condition variables on
+// anything lower than Vista. Looks like we're rolling our own today.
 #else /* vista+ */
 
-typedef volatile LONG atomic_t;
+#define mutex_t         CRITICAL_SECTION
 
-typedef enum {
-    SIGNAL,
-    BROADCAST,
-    MAX_EVENTS
-} event_types_t;
+#define mutex_init(m)   InitializeCriticalSectionAndSpinCount((m), MUTEX_SPINS)
+#define mutex_lock      EnterCriticalSection
+#define mutex_unlock    LeaveCriticalSection
+#define mutex_destroy   DeleteCriticalSection
 
-typedef struct {
-    HANDLE events[MAX_EVENTS];
+#define cond_t          HANDLE
 
-    atomic_t* waiters;
-    char waiters_buffer[sizeof(atomic_t) + 3]; // never refer to this directly!
-                                               // Use waiters, which points to
-} cond_t;                                      // the correct spot in the
-                                               // buffer to maintain alignment.
+// cond_signal may be the same as cond_broadcast, since our code is resistant to
+// spurious wakeups.
+#define cond_signal     SetEvent
+#define cond_broadcast  SetEvent
+#define cond_destroy    CloseHandle
+
 static inline void cond_init(cond_t* c)
 {
-    *c = (cond_t) {
-        .events[SIGNAL]    = CreateEvent(NULL, FALSE, FALSE, NULL),
-        .events[BROADCAST] = CreateEvent(NULL, TRUE, FALSE, NULL),
-    };
-
-    // Guarantees alignment on a 32-bit boundary, as required by windows
-    // interlocked operations.
-    c->waiters = (atomic_t*)((uintptr_t)(c->waiters_buffer + 3) & ~3u);
-
-    assert((uintptr_t)(c->waiters) % 4 == 0
-            && "Atomic variable must be aligned on 32-bit boundary.");
-
-    *c->waiters = 0;
-}
-
-// Is this safe? I'm not really sure. I feel like I need a memory barrier or
-// something...
-static inline void cond_signal(cond_t* c)
-{
-    if(*c->waiters > 0)
-        SetEvent(c->events[SIGNAL]);
-}
-
-// Ditto those safety concerns here.
-static inline void cond_broadcast(cond_t* c)
-{
-    if(*c->waiters > 0)
-        SetEvent(c->events[BROADCAST]);
+    *c = CreateEvent(NULL, FALSE, FALSE, NULL);
 }
 
 static inline void cond_wait(cond_t* c, mutex_t* m)
 {
-    InterlockedIncrement(c->waiters);
-
     mutex_unlock(m);
 
-    DWORD result = WaitForMultipleObjects(MAX_EVENTS, c->events, FALSE, INFINITE);
-
-    bool last_waiter = (InterlockedDecrement(c->waiters) == 0);
-
-    // Some thread called cond_broadcast. We're the last waiter, so reset the
-    // manual event.
-    if(last_waiter && result == (WAIT_OBJECT_0 + BROADCAST))
-        ResetEvent(c->events[BROADCAST]);
+    // We wait for the signal (which only signals ONE thread), propogate it,
+    // then lock our mutex and return. This can potentially lead to a lot of
+    // spurious wakeups, but it does not affect the correctness of the code.
+    // This method has the advantage of being dead-simple, though.
+    WaitForSingleObject(c, INFINITE);
+    cond_signal(c);
 
     mutex_lock(m);
-}
-
-static inline void cond_destroy(cond_t* c)
-{
-    for(size_t i = 0; i < MAX_EVENTS; i++)
-        CloseHandle(c->events[i]);
 }
 
 #endif /* vista+ */
