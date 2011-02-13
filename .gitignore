@@ -1,0 +1,4 @@
+*.plist
+*.o
+core
+tags
