@@ -121,7 +121,7 @@ static inline void* offset_memcpy(void* restrict dest,
 typedef volatile LONG atomic_t;
 
 typedef struct {
-    HANDLE h;
+    HANDLE e;
 
     // waiters points into waiter_buffer, aligned to 4 bytes.
     atomic_t* waiters;
@@ -131,19 +131,18 @@ typedef struct {
 static inline void cond_init(cond_t* c)
 {
     *c = (cond_t) {
-        .h = CreateEvent(NULL, TRUE, FALSE, NULL), // no auto-reset
+        .e = CreateEvent(NULL, FALSE, FALSE, NULL), // auto-reset
 
         // aligns the waiter counter on a 4 byte boundary.
         .waiters = (atomic_t*)((uintptr_t)(c->waiter_buffer + 3) & ~(uintptr_t)3)
     };
 
-    *waiters = 0;
+    *c->waiters = 0;
 }
 
-// Ditto those safety concerns here.
 static inline void cond_broadcast(cond_t* c)
 {
-    // TODO
+    SetEvent(c->e);
 }
 
 // Yes, I'm doing this. In pipe, we don't technically need a cond_signal since
@@ -153,12 +152,21 @@ static inline void cond_broadcast(cond_t* c)
 
 static inline void cond_wait(cond_t* c, mutex_t* m)
 {
-    // TODO
+    InterlockedIncrement(c->waiters);
+    mutex_unlock(m);
+    WaitForSingleObject(c->e, INFINITE);
+
+    LONG waiters_left = InterlockedDecrement(c->waiters);
+
+    if(waiters_left)
+        SetEvent(c->e);
+
+    mutex_lock(m);
 }
 
 static inline void cond_destroy(cond_t* c)
 {
-    CloseHandle(c->h);
+    CloseHandle(c->e);
 }
 
 #endif /* vista+ */
