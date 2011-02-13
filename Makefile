@@ -7,6 +7,12 @@ CFLAGS=-Wall -Wextra -Wpointer-arith -fstrict-aliasing -std=c99 -DFORTIFY_SOURCE
 D_CFLAGS=-DDEBUG -g -O0
 R_CFLAGS=-DNDEBUG -O3 -funroll-loops #-flto
 
+uname_S = $(shell sh -c 'uname -s 2>/dev/null || echo not')
+
+ifeq (,$(findstring MINGW,$(uname_S)))
+	CFLAGS += -pthread
+endif
+
 all: pipe_debug pipe_release
 
 pipe_debug: $(OBJS)
