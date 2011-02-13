@@ -7,9 +7,9 @@ CFLAGS=-Wall -Wextra -Wpointer-arith -fstrict-aliasing -std=c99 -DFORTIFY_SOURCE
 D_CFLAGS=-DDEBUG -g -O0
 R_CFLAGS=-DNDEBUG -O3 -funroll-loops #-flto
 
-uname_S = $(shell sh -c 'uname -s 2>/dev/null || echo not')
+target = $(shell sh -c '$(CC) --version -v 2>&1 | grep "Target:"')
 
-ifeq (,$(findstring MINGW,$(uname_S)))
+ifeq (,$(findstring mingw,$(target)))
 	CFLAGS += -pthread
 endif
 
