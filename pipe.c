@@ -89,98 +89,76 @@ static inline void* offset_memcpy(void* restrict dest,
 
 #include <windows.h>
 
-#define mutex_t CRITICAL_SECTION
-
-#define mutex_init(m)    InitializeCriticalSectionAndSpinCount((m), MUTEX_SPINS)
-#define mutex_lock       EnterCriticalSection
-#define mutex_unlock     LeaveCriticalSection
-#define mutex_destroy(m)
-
-// On vista+, we have native condition variables. Yay.
+// On vista+, we have native condition variables and fast locks. Yay.
 #if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0600
+
+#define mutex_t             SRWLOCK
+
+#define mutex_init          InitializeSRWLock
+#define mutex_lock          AcquireSRWLockExclusive
+#define mutex_unlock        ReleaseSRWLockExclusive
+#define mutex_destroy(m)
 
 #define cond_t              CONDITION_VARIABLE
 
 #define cond_init           InitializeConditionVariable
 #define cond_signal         WakeConditionVariable
 #define cond_broadcast      WakeAllConditionVariable
-#define cond_wait(c, m)     SleepConditionVariableCS((c), (m), INFINITE)
+#define cond_wait(c, m)     SleepConditionVariableSRW((c), (m), INFINITE, 0)
 #define cond_destroy(c)
 
-// Oh god. Microsoft doesn't have native condition variables on anything lower
-// than Vista. Time to roll our own...
+// Oh god. Microsoft has slow locks and lacks native condition variables on
+// anything lower than Vista. Looks like we're rolling our own today.
 #else /* vista+ */
+
+#define mutex_t         CRITICAL_SECTION
+
+#define mutex_init(m)   InitializeCriticalSectionAndSpinCount((m), MUTEX_SPINS)
+#define mutex_lock      EnterCriticalSection
+#define mutex_unlock    LeaveCriticalSection
+#define mutex_destroy   DeleteCriticalSection
 
 typedef volatile LONG atomic_t;
 
-typedef enum {
-    SIGNAL,
-    BROADCAST,
-    MAX_EVENTS
-} event_types_t;
-
 typedef struct {
-    HANDLE events[MAX_EVENTS];
+    HANDLE h;
 
+    // waiters points into waiter_buffer, aligned to 4 bytes.
     atomic_t* waiters;
-    char waiters_buffer[sizeof(atomic_t) + 3]; // never refer to this directly!
-                                               // Use waiters, which points to
-} cond_t;                                      // the correct spot in the
-                                               // buffer to maintain alignment.
+    char waiter_buffer[sizeof(atomic_t) + 3];
+} cond_t;
+
 static inline void cond_init(cond_t* c)
 {
     *c = (cond_t) {
-        .events[SIGNAL]    = CreateEvent(NULL, FALSE, FALSE, NULL),
-        .events[BROADCAST] = CreateEvent(NULL, TRUE, FALSE, NULL),
+        .h = CreateEvent(NULL, TRUE, FALSE, NULL), // no auto-reset
+
+        // aligns the waiter counter on a 4 byte boundary.
+        .waiters = (atomic_t*)((uintptr_t)(c->waiter_buffer + 3) & ~(uintptr_t)3)
     };
 
-    // Guarantees alignment on a 32-bit boundary, as required by windows
-    // interlocked operations.
-    c->waiters = (atomic_t*)((uintptr_t)(c->waiters_buffer + 3) & ~3u);
-
-    assert((uintptr_t)(c->waiters) % 4 == 0
-            && "Atomic variable must be aligned on 32-bit boundary.");
-
-    *c->waiters = 0;
-}
-
-// Is this safe? I'm not really sure. I feel like I need a memory barrier or
-// something...
-static inline void cond_signal(cond_t* c)
-{
-    if(*c->waiters > 0)
-        SetEvent(c->events[SIGNAL]);
+    *waiters = 0;
 }
 
 // Ditto those safety concerns here.
 static inline void cond_broadcast(cond_t* c)
 {
-    if(*c->waiters > 0)
-        SetEvent(c->events[BROADCAST]);
+    // TODO
 }
+
+// Yes, I'm doing this. In pipe, we don't technically need a cond_signal since
+// we check invariants in a loop. Spurious wakeups are tolerable. Therefore, to
+// keep condition variable implementation simple, we only support broadcasting.
+#define cond_signal cond_broadcast
 
 static inline void cond_wait(cond_t* c, mutex_t* m)
 {
-    InterlockedIncrement(c->waiters);
-
-    mutex_unlock(m);
-
-    DWORD result = WaitForMultipleObjects(MAX_EVENTS, c->events, FALSE, INFINITE);
-
-    bool last_waiter = (InterlockedDecrement(c->waiters) == 0);
-
-    // Some thread called cond_broadcast. We're the last waiter, so reset the
-    // manual event.
-    if(last_waiter && result == (WAIT_OBJECT_0 + BROADCAST))
-        ResetEvent(c->events[BROADCAST]);
-
-    mutex_lock(m);
+    // TODO
 }
 
 static inline void cond_destroy(cond_t* c)
 {
-    for(size_t i = 0; i < MAX_EVENTS; i++)
-        CloseHandle(c->events[i]);
+    CloseHandle(c->h);
 }
 
 #endif /* vista+ */
