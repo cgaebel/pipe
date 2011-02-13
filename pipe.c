@@ -118,55 +118,31 @@ static inline void* offset_memcpy(void* restrict dest,
 #define mutex_unlock    LeaveCriticalSection
 #define mutex_destroy   DeleteCriticalSection
 
-typedef volatile LONG atomic_t;
+#define cond_t          HANDLE
 
-typedef struct {
-    HANDLE e;
-
-    // waiters points into waiter_buffer, aligned to 4 bytes.
-    atomic_t* waiters;
-    char waiter_buffer[sizeof(atomic_t) + 3];
-} cond_t;
+// cond_signal may be the same as cond_broadcast, since our code is resistant to
+// spurious wakeups.
+#define cond_signal     SetEvent
+#define cond_broadcast  SetEvent
+#define cond_destroy    CloseHandle
 
 static inline void cond_init(cond_t* c)
 {
-    *c = (cond_t) {
-        .e = CreateEvent(NULL, FALSE, FALSE, NULL), // auto-reset
-
-        // aligns the waiter counter on a 4 byte boundary.
-        .waiters = (atomic_t*)((uintptr_t)(c->waiter_buffer + 3) & ~(uintptr_t)3)
-    };
-
-    *c->waiters = 0;
+    *c = CreateEvent(NULL, FALSE, FALSE, NULL);
 }
-
-static inline void cond_broadcast(cond_t* c)
-{
-    SetEvent(c->e);
-}
-
-// Yes, I'm doing this. In pipe, we don't technically need a cond_signal since
-// we check invariants in a loop. Spurious wakeups are tolerable. Therefore, to
-// keep condition variable implementation simple, we only support broadcasting.
-#define cond_signal cond_broadcast
 
 static inline void cond_wait(cond_t* c, mutex_t* m)
 {
-    InterlockedIncrement(c->waiters);
     mutex_unlock(m);
+
+    // We wait for the signal (which only signals ONE thread), propogate it,
+    // then lock our mutex and return. This can potentially lead to a lot of
+    // spurious wakeups, but it does not affect the correctness of the code.
+    // This method has the advantage of being dead-simple, though.
     WaitForSingleObject(c->e, INFINITE);
-
-    LONG waiters_left = InterlockedDecrement(c->waiters);
-
-    if(waiters_left)
-        SetEvent(c->e);
+    SetEvent(c->e);
 
     mutex_lock(m);
-}
-
-static inline void cond_destroy(cond_t* c)
-{
-    CloseHandle(c->e);
 }
 
 #endif /* vista+ */
