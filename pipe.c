@@ -75,9 +75,14 @@ static inline void* offset_memcpy(void* restrict dest,
     return (char*)dest + n;
 }
 
+// Adds padding to a struct of `amount' bytes.
+#define PAD1(amount, line) char _pad_##line[(amount)]
+#define PAD0(amount, line) PAD1(amount, line)
+#define PAD(amount) PAD0(amount, __LINE__)
+
 // Pads a variable of type `type' to a 64-byte cache line, to prevent false
 // sharing.
-#define PAD(name, amount) char _pad_##name[(amount)]
+#define ALIGN_TO_CACHE(type, name) type name; PAD(64 - sizeof(type))
 
 // The number of spins to do before performing an expensive kernel-mode context
 // switch. This is a nice easy value to tweak for your application's needs. Set
@@ -290,21 +295,18 @@ struct pipe_t {
                        // It helps me avoid constantly typing
                        // (p->buffer + p->elem_size*p->capacity).
 
-    // Always points to the left-most element in the pipe.
-    char * begin;
-    PAD(begin, 64 - sizeof(char*));
+    // Keep the shared variables away from the cache-aligned ones.
+    PAD(64 - 5*sizeof(size_t) - 2*sizeof(char*));
 
-    // Always points past the right-most element in the pipe.
-    char * end;
-    PAD(end, 64 - sizeof(char*));
+    ALIGN_TO_CACHE(char*, begin);   // Always points to the left-most element
+                                    // in the pipe.
+    ALIGN_TO_CACHE(char*, end);     // Always points past the right-most
+                                    // element in the pipe.
 
-    // The number of producers in circulation.
-    atomic_t producer_refcount;
-    PAD(producer_refcount, 64 - sizeof(atomic_t));
-
-    // The number of consumers in circulation.
-    atomic_t consumer_refcount;
-    PAD(consumer_refcount, 64 - sizeof(atomic_t));
+    ALIGN_TO_CACHE(atomic_t, producer_refcount); // The number of producers in
+                                                 // circulation.
+    ALIGN_TO_CACHE(atomic_t, consumer_refcount); // The number of consumers in
+                                                 // circulation.
 
     mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
                            // coarse-grained locking.
