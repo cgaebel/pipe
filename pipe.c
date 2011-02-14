@@ -85,7 +85,7 @@ static inline void* offset_memcpy(void* restrict dest,
 // Standard threading stuff. This lets us support simple synchronization
 // primitives on multiple platforms painlessly.
 
-#ifdef _WIN32 // use the native win32 API on windows
+#if defined(_WIN32) || defined(_WIN64) // use the native win32 API on windows
 
 #include <windows.h>
 
@@ -182,6 +182,30 @@ static void mutex_lock(mutex_t* m)
 
 // End threading.
 
+// Begin atomics.
+
+#if defined(__GNUC__)
+
+typedef volatile size_t atomic_t;
+
+#define atomic_inc(a) __sync_add_and_fetch((a), 1)
+#define atomic_dec(a) __sync_sub_and_fetch((a), 1)
+
+#elif defined(_WIN32) || defined(_WIN64)
+
+#include <windows.h>
+
+typedef volatile LONG atomic_t;
+
+#define atomic_inc InterlockedIncrement
+#define atomic_dec InterlockedDecrement
+
+#else
+#error "We need atomic increment and decrement. Please fill them out for your platform."
+#endif
+
+// End atomics.
+
 /*
  * Pipe implementation overview
  * =================================
@@ -257,8 +281,8 @@ struct pipe_t {
          * begin,      // Always points to the left-most element in the pipe.
          * end;        // Always points past the right-most element in the pipe.
 
-    size_t producer_refcount,      // The number of producers in circulation.
-           consumer_refcount;      // The number of consumers in circulation.
+    atomic_t producer_refcount,      // The number of producers in circulation.
+             consumer_refcount;      // The number of consumers in circulation.
 
     mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
                            // coarse-grained locking.
@@ -291,6 +315,14 @@ static inline void fix_bufend(pipe_t* p)
 static inline bool wraps_around(const pipe_t* p)
 {
     return p->begin > p->end;
+}
+
+static inline size_t get_elem_count(pipe_t* p)
+{
+    return (wraps_around(p)
+             ? (uintptr_t)((p->end - p->buffer) + (p->bufend - p->begin))
+             : (uintptr_t)(p->end - p->begin))
+           / p->elem_size; // oh god an IDIV. Is there any way to avoid this?
 }
 
 #define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
@@ -442,31 +474,19 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     return p;
 }
 
-static inline void increment_refcount(mutex_t* m, size_t* ref)
-{
-    mutex_lock(m);
-    ++*ref;
-    mutex_unlock(m);
-}
-
 // Instead of allocating a special handle, the pipe_*_new() functions just
 // return the original pipe, cast into a user-friendly form. This saves needless
 // malloc calls. Also, since we have to refcount anyways, it's free.
 pipe_producer_t* pipe_producer_new(pipe_t* p)
 {
-    increment_refcount(&p->m, &p->producer_refcount);
+    atomic_inc(&p->producer_refcount);
     return (pipe_producer_t*)p;
 }
 
 pipe_consumer_t* pipe_consumer_new(pipe_t* p)
 {
-    increment_refcount(&p->m, &p->consumer_refcount);
+    atomic_inc(&p->consumer_refcount);
     return (pipe_consumer_t*)p;
-}
-
-static inline bool requires_deallocation(const pipe_t* p)
-{
-    return p->producer_refcount == 0 && p->consumer_refcount == 0;
 }
 
 static inline void deallocate(pipe_t* p)
@@ -489,35 +509,32 @@ static inline void deallocate(pipe_t* p)
 
 void pipe_free(pipe_t* p)
 {
-    size_t new_producer_refcount,
-           new_consumer_refcount;
+    assertume(p->producer_refcount > 0);
+    assertume(p->consumer_refcount > 0);
 
-    WHILE_LOCKED(
-        assertume(p->producer_refcount > 0);
-        assertume(p->consumer_refcount > 0);
+    atomic_t new_producer_refcount = atomic_dec(&p->producer_refcount),
+             new_consumer_refcount = atomic_dec(&p->consumer_refcount);
 
-        new_producer_refcount = --p->producer_refcount;
-        new_consumer_refcount = --p->consumer_refcount;
+    if(unlikely(new_consumer_refcount == 0))
+    {
+        p->buffer = x_free(p->buffer);
 
-        if(unlikely(p->consumer_refcount == 0))
-            p->buffer = x_free(p->buffer);
-
-        if(unlikely(requires_deallocation(p)))
+        if(unlikely(new_producer_refcount == 0))
         {
             deallocate(p);
             return;
         }
-    );
+    }
 
     // If this was the last "producer" handle issued, we need to wake up the
     // consumers so they don't spend forever waiting for elements that can never
     // come.
-    if(new_producer_refcount == 0)
+    if(unlikely(new_producer_refcount == 0))
         cond_broadcast(&p->just_pushed);
 
     // Same issue for the producers waiting on consumers that don't exist
     // anymore.
-    if(new_consumer_refcount == 0)
+    if(unlikely(new_consumer_refcount == 0))
         cond_broadcast(&p->just_popped);
 }
 
@@ -525,49 +542,42 @@ void pipe_producer_free(pipe_producer_t* handle)
 {
     pipe_t* p = PIPIFY(handle);
 
-    size_t new_producer_refcount;
+    assertume(p->producer_refcount > 0);
 
-    WHILE_LOCKED(
-        assertume(p->producer_refcount > 0);
+    size_t new_producer_refcount = atomic_dec(&p->producer_refcount);
 
-        new_producer_refcount = --p->producer_refcount;
-
-        if(unlikely(requires_deallocation(p)))
-        {
+    if(unlikely(new_producer_refcount == 0))
+    {
+        // If there are still consumers, wake them up if they're waiting on
+        // input from a producer. Otherwise, since we're the last handle
+        // altogether, we can free the pipe.
+        if(likely(p->consumer_refcount > 0))
+            cond_broadcast(&p->just_pushed);
+        else
             deallocate(p);
-            return;
-        }
-    );
-
-    if(new_producer_refcount == 0)
-        cond_broadcast(&p->just_pushed);
+    }
 }
 
 void pipe_consumer_free(pipe_consumer_t* handle)
 {
     pipe_t* p = PIPIFY(handle);
 
-    size_t new_consumer_refcount;
+    assertume(p->consumer_refcount > 0);
 
-    WHILE_LOCKED(
-        assertume(p->consumer_refcount > 0);
+    size_t new_consumer_refcount = atomic_dec(&p->consumer_refcount);
 
-        new_consumer_refcount = --p->consumer_refcount;
+    if(unlikely(new_consumer_refcount == 0))
+    {
+        p->buffer = x_free(p->buffer);
 
-        // If this was the last consumer out of the gate, we can deallocate the
-        // buffer. It has no use anymore.
-        if(unlikely(p->consumer_refcount == 0))
-            p->buffer = x_free(p->buffer);
-
-        if(unlikely(requires_deallocation(p)))
-        {
+        // If there are still producers, wake them up if they're waiting on
+        // room to free up from a consumer. Otherwise, since we're the last
+        // handle altogether, we can free the pipe.
+        if(likely(p->producer_refcount > 0))
+            cond_broadcast(&p->just_popped);
+        else
             deallocate(p);
-            return;
-        }
-    );
-
-    if(new_consumer_refcount == 0)
-        cond_broadcast(&p->just_popped);
+    }
 }
 
 // Returns the end of the buffer (buf + number_of_bytes_copied).
@@ -792,8 +802,8 @@ static inline size_t pop_without_locking(pipe_t* p,
     // doesn't get too time-inefficient.
     size_t capacity = p->capacity;
 
-    if(elem_count <= (capacity / 4))
-        resize_buffer(p,  capacity / 2);
+    if(elem_count <=    (capacity / 4))
+        resize_buffer(p, capacity / 2);
 
     return elems_to_copy;
 }
