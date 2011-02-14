@@ -281,17 +281,21 @@ typedef volatile LONG atomic_t;
 struct pipe_t {
     size_t elem_size,  // The size of each element. This is read-only and
                        // therefore does not need to be locked to read.
-           elem_count, // The number of elements currently in the pipe.
            capacity,   // The maximum number of elements the buffer can hold
-                       // before a reallocation.
+                       // before a reallocation. To modify this variable, you
+                       // must lock the whole pipe.
            min_cap,    // The smallest sane capacity before the buffer refuses
                        // to shrink because it would just end up growing again.
+                       // To modify this variable, you must lock the whole pipe.
            max_cap;    // The maximum capacity of the pipe before push requests
                        // are blocked. This is read-only and therefore does not
-                       // need to be locked to read.
+                       // need to be locked to read. To modify this variable,
+                       // you must lock the whole pipe.
 
-    char * buffer,     // The internal buffer, holding the enqueued elements.
-         * bufend;     // Just a shortcut pointer to the end of the buffer.
+    char * buffer,     // The internal buffer, holding the enqueued elements. To
+                       // modify this variable, you must lock the whole pipe.
+         * bufend;     // Just a shortcut pointer to the end of the buffer. To
+                       // modify this variable, you must lock the whole pipe.
                        // It helps me avoid constantly typing
                        // (p->buffer + p->elem_size*p->capacity).
 
@@ -299,17 +303,25 @@ struct pipe_t {
     PAD(64 - 5*sizeof(size_t) - 2*sizeof(char*));
 
     ALIGN_TO_CACHE(char*, begin);   // Always points to the left-most element
-                                    // in the pipe.
+                                    // in the pipe. To modify this variable,
+                                    // you must lock begin_lock.
     ALIGN_TO_CACHE(char*, end);     // Always points past the right-most
-                                    // element in the pipe.
+                                    // element in the pipe. To modify this
+                                    // variable, you must lock end_lock.
 
     ALIGN_TO_CACHE(atomic_t, producer_refcount); // The number of producers in
-                                                 // circulation.
+                                                 // circulation. Only modify
+                                                 // this variable with
+                                                 // atomic_[inc|dec].
     ALIGN_TO_CACHE(atomic_t, consumer_refcount); // The number of consumers in
-                                                 // circulation.
+                                                 // circulation. Only modify
+                                                 // this variable with
+                                                 // atomic_[inc|dec].
 
-    mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
-                           // coarse-grained locking.
+    // Our lovely mutexes. To lock the pipe, call lock_pipe. Depending on what
+    // you modify, you may be able to get away with only locking one of them.
+    mutex_t begin_lock,
+            end_lock;
 
     cond_t  just_pushed,   // Signaled immediately after any push operation.
             just_popped;   // Signaled immediately after any pop operation.
@@ -336,16 +348,21 @@ static inline void fix_bufend(pipe_t* p)
 // Does the buffer wrap around?
 //   true  -> wrap
 //   false -> nowrap
-static inline bool wraps_around(const pipe_t* p)
+static inline bool wraps_around(const char* begin, const char* end)
 {
-    return p->begin > p->end;
+    return begin > end;
 }
 
-static inline size_t get_elem_count(pipe_t* p)
+static inline size_t get_elem_count(const pipe_t* p)
 {
-    return (wraps_around(p)
-             ? (uintptr_t)((p->end - p->buffer) + (p->bufend - p->begin))
-             : (uintptr_t)(p->end - p->begin))
+    const char* begin = p->begin,
+              * end = p->end,
+              * buffer = p->buffer,
+              * bufend = p->bufend;
+
+    return (wraps_around(begin, end)
+             ? (uintptr_t)((end - buffer) + (bufend - begin))
+             : (uintptr_t)(end - begin))
            / p->elem_size; // oh god an IDIV. Is there any way to avoid this?
 }
 
@@ -407,7 +424,7 @@ static inline void check_invariants(const pipe_t* p)
 
     assertume(p->elem_size != 0);
 
-    assertume(p->elem_count <= p->capacity
+    assertume(get_elem_count(p) <= p->capacity
             && "There are more elements in the buffer than its capacity.");
     assertume(p->bufend == p->buffer + p->elem_size*p->capacity
             && "This is axiomatic. Was fix_bufend not called somewhere?");
@@ -416,7 +433,7 @@ static inline void check_invariants(const pipe_t* p)
     assertume(in_bounds(p->buffer, p->end, p->bufend));
 
     if(p->begin == p->end)
-        assert(p->elem_count == 0);
+        assert(get_elem_count(p) == 0);
 
     assertume(in_bounds(DEFAULT_MINCAP, p->min_cap, p->max_cap));
     assertume(in_bounds(p->min_cap, p->capacity, p->max_cap));
@@ -424,28 +441,22 @@ static inline void check_invariants(const pipe_t* p)
     assertume(p->begin != p->bufend
             && "The begin pointer should NEVER point to the end of the buffer."
                "If it does, it should have been automatically moved to the front.");
-
-    // Ensure the size accurately reflects the begin/end pointers' positions.
-    // Kindly refer to the diagram in struct pipe_t's documentation =)
-    if(wraps_around(p))
-        assertume(p->elem_size*p->elem_count ==
-        //            v    left half     v   v     right half     v
-          (uintptr_t)((p->end - p->buffer) + (p->bufend - p->begin)));
-    else
-        assertume(p->elem_size*p->elem_count ==
-          (uintptr_t)(p->end - p->begin));
 }
 
 static inline void lock_pipe(pipe_t* p)
 {
-    mutex_lock(&p->m);
+    // watch the locking order VERY carefully. end_lock must ALWAYS be locked
+    // before begin_lock when dealing with both at once.
+    mutex_lock(&p->end_lock);
+    mutex_lock(&p->begin_lock);
     check_invariants(p);
 }
 
 static inline void unlock_pipe(pipe_t* p)
 {
     check_invariants(p);
-    mutex_unlock(&p->m);
+    mutex_unlock(&p->begin_lock);
+    mutex_unlock(&p->end_lock);
 }
 
 // runs some code while automatically locking and unlocking the pipe. If `break'
@@ -472,7 +483,6 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
 
     *p = (pipe_t) {
         .elem_size  = elem_size,
-        .elem_count = 0,
         .capacity = cap,
         .min_cap = DEFAULT_MINCAP,
         .max_cap = limit ? next_pow2(max(limit, cap)) : ~(size_t)0,
@@ -489,7 +499,9 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
         .consumer_refcount = 1,
     };
 
-    mutex_init(&p->m);
+    mutex_init(&p->begin_lock);
+    mutex_init(&p->end_lock);
+
     cond_init(&p->just_pushed);
     cond_init(&p->just_popped);
 
@@ -518,9 +530,10 @@ static inline void deallocate(pipe_t* p)
     assertume(p->producer_refcount == 0);
     assertume(p->consumer_refcount == 0);
 
-    mutex_unlock(&p->m);
+    unlock_pipe(p);
 
-    mutex_destroy(&p->m);
+    mutex_destroy(&p->begin_lock);
+    mutex_destroy(&p->end_lock);
 
     cond_destroy(&p->just_pushed);
     cond_destroy(&p->just_popped);
@@ -615,7 +628,7 @@ static inline char* copy_pipe_into_new_buf(const pipe_t* p,
               * const buffer = p->buffer,
               * const bufend = p->bufend;
 
-    if(wraps_around(p))
+    if(wraps_around(begin, end))
     {
         buf = offset_memcpy(buf, begin, bufend - begin);
         buf = offset_memcpy(buf, buffer, end - buffer);
@@ -636,7 +649,7 @@ static void resize_buffer(pipe_t* p, size_t new_size)
                  min_cap    = p->min_cap,
                  elem_size  = p->elem_size;
 
-    assertume(new_size >= p->elem_count);
+    assertume(new_size >= get_elem_count(p));
 
     if(unlikely(new_size >= max_cap))
         new_size = max_cap;
@@ -657,37 +670,49 @@ static void resize_buffer(pipe_t* p, size_t new_size)
     check_invariants(p);
 }
 
-static inline void push_without_locking(pipe_t* p,
-                                        const void* restrict elems,
-                                        size_t count)
+// Ensures the buffer has enough room for `count' more elements. This function
+// assumes p->end_lock is locked.
+static inline void validate_size(pipe_t* p, size_t count)
 {
-    check_invariants(p);
-    assertume(count != 0);
-    assertume(p->elem_count + count + 1 <= p->max_cap);
-
-    const size_t elem_count = p->elem_count,
-                 elem_size  = p->elem_size;
-
     // We add 1 to ensure p->begin != p->end unless p->elem_count == 0,
     // maintaining one of our invariants.
-    if(unlikely(elem_count + count + 1 > p->capacity))
-        resize_buffer(p, next_pow2(elem_count + count + 1));
+    if(unlikely(get_elem_count(p) + count + 1 > p->capacity))
+    {
+        // upgrade our lock, then re-check.
+        mutex_unlock(&p->end_lock);
+        lock_pipe(p);
 
-    // Since we've just grown the buffer (if necessary), we now KNOW we have
-    // enough room for the push. So do it!
-    assertume(p->capacity >= elem_count + count + 1);
+        if(unlikely(get_elem_count(p) + count + 1 > p->capacity))
+            resize_buffer(p, next_pow2(get_elem_count(p) + count));
+
+        unlock_pipe(p);
+        mutex_lock(&p->end_lock);
+    }
+}
+
+static inline void process_push(pipe_t* p,
+                                const void* restrict elems,
+                                size_t count)
+{
+    assertume(count != 0);
+
+    // Since we should have grown the buffer by now (if necessary), we KNOW we
+    // have enough room for the push. So do it!
+
+    const size_t elem_size  = p->elem_size;
 
     size_t bytes_to_copy = count*elem_size;
 
     char* const buffer = p->buffer,
         * const bufend = p->bufend,
+        * const begin  = p->begin,
         *       end    = p->end;
 
     // If we currently have a nowrap buffer, we may have to wrap the new
     // elements. Copy as many as we can at the end, then start copying into the
     // beginning. This basically reduces the problem to only deal with wrapped
     // buffers, which can be dealt with using a single offset_memcpy.
-    if(!wraps_around(p))
+    if(!wraps_around(begin, end))
     {
         assertume(bufend >= end);
         size_t at_end = min(bytes_to_copy, (size_t)(bufend - end));
@@ -706,11 +731,31 @@ static inline void push_without_locking(pipe_t* p,
         end = offset_memcpy(end, elems, bytes_to_copy);
     }
 
-    // ...and update the end pointer and count!
-    p->end         = end;
-    p->elem_count += count;
+    // ...and update the end pointer!
+    p->end = end;
+}
 
-    check_invariants(p);
+// Will spin until there is enough room in the buffer to push `count' elements.
+// Returns the number of elements currently in the buffer. `end_lock` should be
+// locked on entrance to this function. This function returns ~(size_t)0 if all
+// consumers were freed, and we must stop pushing.
+static inline size_t wait_for_room(pipe_t* p, size_t* max_cap)
+{
+    size_t elem_count        = get_elem_count(p),
+           consumer_refcount = p->consumer_refcount;
+
+    *max_cap = p->max_cap;
+
+    for(; unlikely(elem_count == *max_cap) && likely(consumer_refcount > 0);
+          elem_count = get_elem_count(p),
+          consumer_refcount = p->consumer_refcount,
+          *max_cap = p->max_cap)
+        cond_wait(&p->just_popped, &p->end_lock);
+
+    if(unlikely(consumer_refcount == 0))
+        return ~(size_t)0;
+
+    return elem_count;
 }
 
 void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
@@ -720,34 +765,31 @@ void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
     if(unlikely(count == 0))
         return;
 
-    const size_t elem_size = p->elem_size,
-                 max_cap   = p->max_cap;
+    size_t elem_size = p->elem_size;
 
-    size_t pushed = 0;
+    size_t pushed  = 0;
 
-    WHILE_LOCKED(
-        size_t elem_count        = p->elem_count;
-        size_t consumer_refcount = p->consumer_refcount;
+    { mutex_lock(&p->end_lock);
+        size_t max_cap = 0;
+        size_t elem_count = wait_for_room(p, &max_cap);
 
-        // Wait for there to be enough room in the buffer for some new elements.
-        for(; unlikely(elem_count == max_cap) && likely(consumer_refcount > 0);
-              elem_count        = p->elem_count,
-              consumer_refcount = p->consumer_refcount)
-            cond_wait(&p->just_popped, &p->m);
+        assertume(max_cap != 0);
 
-        // Don't perform an actual push if we have no consumers issued. The
-        // buffer's been freed.
-        if(unlikely(consumer_refcount == 0))
+        // if no more consumers...
+        if(unlikely(elem_count == ~(size_t)0))
         {
-            unlock_pipe(p);
+            mutex_unlock(&p->end_lock);
             return;
         }
 
-        // Push as many elements into the queue as possible.
-        push_without_locking(p, elems,
+        validate_size(p, count);
+
+        // Finally, we can now begin with pushing as many elements into the queue
+        // as possible.
+        process_push(p, elems,
             pushed = min(count, max_cap - elem_count)
         );
-    );
+    } mutex_unlock(&p->end_lock);
 
     assertume(pushed > 0);
 
@@ -764,23 +806,29 @@ void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
     }
 }
 
-// wow, I didn't even intend for the name to work like that...
-static inline size_t pop_without_locking(pipe_t* p,
-                                         void* restrict target,
-                                         size_t count)
+// Waits for at least one element to be in the pipe. p->begin_lock must be
+// locked when entering this function, and the current number of elements
+// is returned.
+static inline size_t wait_for_elements(pipe_t* p)
 {
-    check_invariants(p);
+    size_t elem_count = get_elem_count(p);
 
-    size_t       elem_count = p->elem_count;
-    size_t const elem_size  = p->elem_size;
+    for(; elem_count == 0 && likely(p->producer_refcount > 0);
+          elem_count = get_elem_count(p))
+        cond_wait(&p->just_pushed, &p->begin_lock);
 
-    size_t const elems_to_copy   = min(count, elem_count);
+    return elem_count;
+}
+
+// wow, I didn't even intend for the name to work like that...
+static inline size_t pop_without_locking(pipe_t* p, size_t elem_count,
+                                         void* restrict target,
+                                         size_t elems_to_copy)
+{
+    size_t const elem_size       = p->elem_size;
     size_t       bytes_remaining = elems_to_copy * elem_size;
 
     assertume(bytes_remaining <= elem_count*elem_size);
-
-    p->elem_count =
-       elem_count = elem_count - elems_to_copy;
 
     char* const buffer = p->buffer,
         * const bufend = p->bufend,
@@ -807,6 +855,8 @@ static inline size_t pop_without_locking(pipe_t* p,
         WRAP_PTR_IF_NECESSARY(begin);
     }
 
+    elem_count -= elems_to_copy;
+
     // This accounts for the odd case where the begin pointer wrapped around and
     // the end pointer didn't follow it.
     if(elem_count == 0)
@@ -816,7 +866,20 @@ static inline size_t pop_without_locking(pipe_t* p,
     // on the pipe.
     p->begin = begin;
 
-    check_invariants(p);
+    return elems_to_copy;
+}
+
+// If the buffer is shrunk to something a lot smaller than our current
+// capacity, resize it to something sane.
+static inline void trim_buffer(pipe_t* p)
+{
+    // We have a sane size. We're done here.
+    if(get_elem_count(p) > p->capacity / 4)
+        return;
+
+    // Okay, we need to resize now. Upgrade our lock so we can check again.
+    mutex_unlock(&p->begin_lock);
+    lock_pipe(p);
 
     // To conserve space like the good computizens we are, we'll shrink
     // our buffer if our memory usage efficiency drops below 25%. However,
@@ -824,36 +887,40 @@ static inline size_t pop_without_locking(pipe_t* p,
     // or pop, we only shrink it to bring us up to a 50% efficiency. A common
     // pipe usage pattern is sudden bursts of pushes and pops. This ensures it
     // doesn't get too time-inefficient.
-    size_t capacity = p->capacity;
+    if(get_elem_count(p) <= p->capacity / 4)
+        resize_buffer(p, p->capacity / 2);
 
-    if(elem_count <=    (capacity / 4))
-        resize_buffer(p, capacity / 2);
-
-    return elems_to_copy;
+    // All done. Downgrade our lock so we leave with the same lock-level we came
+    // in with.
+    unlock_pipe(p);
+    mutex_lock(&p->begin_lock);
 }
 
 size_t pipe_pop(pipe_consumer_t* c, void* restrict target, size_t requested)
 {
     pipe_t* p = PIPIFY(c);
 
+    if(unlikely(requested == 0))
+        return 0;
+
     size_t popped = 0;
 
-    WHILE_LOCKED(
-        size_t elem_count = p->elem_count;
-
-        // While we need more elements and there exists at least one producer...
-        for(; elem_count == 0 && likely(p->producer_refcount > 0);
-              elem_count = p->elem_count)
-            cond_wait(&p->just_pushed, &p->m);
+    { mutex_lock(&p->begin_lock);
+        size_t elem_count = wait_for_elements(p);
 
         if(unlikely(elem_count == 0))
-            break;
+        {
+            mutex_unlock(&p->begin_lock);
+            return 0;
+        }
 
-        popped = pop_without_locking(p, target, requested);
-    );
+        popped = pop_without_locking(p, elem_count,
+                                     target, min(requested, elem_count));
 
-    if(unlikely(!popped))
-        return 0;
+        trim_buffer(p);
+    } mutex_unlock(&p->begin_lock);
+
+    assert(popped);
 
     (popped == 1 ? cond_signal : cond_broadcast)(&p->just_popped);
 
@@ -876,7 +943,7 @@ void pipe_reserve(pipe_generic_t* gen, size_t count)
     size_t max_cap = p->max_cap;
 
     WHILE_LOCKED(
-        if(unlikely(count <= p->elem_count))
+        if(unlikely(count <= get_elem_count(p)))
             break;
 
         p->min_cap = min(count, max_cap);
