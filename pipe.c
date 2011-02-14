@@ -75,6 +75,10 @@ static inline void* offset_memcpy(void* restrict dest,
     return (char*)dest + n;
 }
 
+// Pads a variable of type `type' to a 64-byte cache line, to prevent false
+// sharing.
+#define PAD(name, amount) char _pad_##name[(amount)]
+
 // The number of spins to do before performing an expensive kernel-mode context
 // switch. This is a nice easy value to tweak for your application's needs. Set
 // it to 0 if you want the implementation to decide, a low number if you are
@@ -188,8 +192,15 @@ static void mutex_lock(mutex_t* m)
 
 typedef volatile size_t atomic_t;
 
-#define atomic_inc(a) __sync_add_and_fetch((a), 1)
-#define atomic_dec(a) __sync_sub_and_fetch((a), 1)
+static inline size_t atomic_inc(atomic_t* a)
+{
+    return __sync_add_and_fetch(a, 1);
+}
+
+static inline size_t atomic_dec(atomic_t* a)
+{
+    return __sync_sub_and_fetch(a, 1);
+}
 
 #elif defined(_WIN32) || defined(_WIN64)
 
@@ -275,14 +286,25 @@ struct pipe_t {
                        // need to be locked to read.
 
     char * buffer,     // The internal buffer, holding the enqueued elements.
-         * bufend,     // Just a shortcut pointer to the end of the buffer.
+         * bufend;     // Just a shortcut pointer to the end of the buffer.
                        // It helps me avoid constantly typing
                        // (p->buffer + p->elem_size*p->capacity).
-         * begin,      // Always points to the left-most element in the pipe.
-         * end;        // Always points past the right-most element in the pipe.
 
-    atomic_t producer_refcount,      // The number of producers in circulation.
-             consumer_refcount;      // The number of consumers in circulation.
+    // Always points to the left-most element in the pipe.
+    char * begin;
+    PAD(begin, 64 - sizeof(char*));
+
+    // Always points past the right-most element in the pipe.
+    char * end;
+    PAD(end, 64 - sizeof(char*));
+
+    // The number of producers in circulation.
+    atomic_t producer_refcount;
+    PAD(producer_refcount, 64 - sizeof(atomic_t));
+
+    // The number of consumers in circulation.
+    atomic_t consumer_refcount;
+    PAD(consumer_refcount, 64 - sizeof(atomic_t));
 
     mutex_t m;             // The mutex guarding the WHOLE pipe. We use very
                            // coarse-grained locking.
