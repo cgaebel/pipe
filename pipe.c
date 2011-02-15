@@ -156,7 +156,7 @@ static inline void cond_wait(cond_t* c, mutex_t* m)
 
 #endif /* vista+ */
 
-// fall back on pthreads if we havn't special-cased the current operating system
+// Fall back on pthreads if we haven't special-cased the current OS.
 #else /* windows */
 
 #include <pthread.h>
@@ -266,8 +266,9 @@ typedef volatile LONG atomic_t;
  * end pointer. This is due to the realization that when pushing, you don't need
  * an up-to-date value for begin, and when popping you don't need an up-to-date
  * value for end (since either can only move forward in the buffer). As long as
- * neither moves backwards, there will be no conflicts if they move independent
- * of each other. This optimization has improved benchmarks by 15-20%.
+ * neither moves backwards, there will be no conflicts when they move
+ * independently of each other. This optimization has improved benchmarks by
+ * 15-20%.
  *
  * Complexity:
  *
@@ -363,10 +364,10 @@ static inline size_t get_elem_count(const pipe_t* p)
               * buffer = p->buffer,
               * bufend = p->bufend;
 
-    return (wraps_around(begin, end)
-             ? (uintptr_t)((end - buffer) + (bufend - begin))
-             : (uintptr_t)(end - begin))
-           / p->elem_size; // oh god an IDIV. Is there any way to avoid this?
+    return (size_t)(wraps_around(begin, end)
+                     ? ((end - buffer) + (bufend - begin))
+                     : (end - begin))
+             / p->elem_size; // oh god an IDIV. Is there any way to avoid this?
 }
 
 #define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
@@ -390,6 +391,7 @@ static size_t CONSTEXPR next_pow2(size_t n)
     // Since we don't have to worry about overflow anymore, we can just use
     // the algorithm documented at:
     //   http://bits.stephan-brumme.com/roundUpToNextPowerOfTwo.html
+    // It's my favorite due to being branch-free. The loop will be unrolled.
     n--;
 
     for(size_t shift = 1; shift < (sizeof n)*8; shift <<= 1)
@@ -681,15 +683,14 @@ static inline void validate_size(pipe_t* p, size_t count)
     // maintaining one of our invariants.
     if(unlikely(get_elem_count(p) + count + 1 > p->capacity))
     {
-        // upgrade our lock, then re-check.
-        mutex_unlock(&p->end_lock);
-        lock_pipe(p);
+        // upgrade our lock, then re-check. By taking both locks (end and begin)
+        // in order, we have an equivalent operation to lock_pipe().
+        mutex_lock(&p->begin_lock);
 
-        if(unlikely(get_elem_count(p) + count + 1 > p->capacity))
+        if(likely(get_elem_count(p) + count + 1 > p->capacity))
             resize_buffer(p, next_pow2(get_elem_count(p) + count));
 
-        unlock_pipe(p);
-        mutex_lock(&p->end_lock);
+        mutex_unlock(&p->begin_lock);
     }
 }
 
@@ -877,7 +878,7 @@ static inline size_t pop_without_locking(pipe_t* p, size_t elem_count,
 static inline void trim_buffer(pipe_t* p)
 {
     // We have a sane size. We're done here.
-    if(get_elem_count(p) > p->capacity / 4)
+    if(likely(get_elem_count(p) > p->capacity / 4))
         return;
 
     // Okay, we need to resize now. Upgrade our lock so we can check again.
@@ -890,13 +891,13 @@ static inline void trim_buffer(pipe_t* p)
     // or pop, we only shrink it to bring us up to a 50% efficiency. A common
     // pipe usage pattern is sudden bursts of pushes and pops. This ensures it
     // doesn't get too time-inefficient.
-    if(get_elem_count(p) <= p->capacity / 4)
+    if(likely(get_elem_count(p) <= p->capacity / 4))
         resize_buffer(p, p->capacity / 2);
 
     // All done. Downgrade our lock so we leave with the same lock-level we came
-    // in with.
-    unlock_pipe(p);
-    mutex_lock(&p->begin_lock);
+    // in with. We only need to unlock the extra lock we grabbed. We can keep
+    // the begin_lock locked instead of unlocking then relocking it.
+    mutex_unlock(&p->end_lock);
 }
 
 size_t pipe_pop(pipe_consumer_t* c, void* restrict target, size_t requested)
