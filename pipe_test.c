@@ -106,6 +106,9 @@ static void double_elems(const void* elems, size_t count, pipe_producer_t* out, 
 {
     UNUSED_PARAMETER(aux);
 
+    if(count == 0)
+        return;
+
     testdata_t outbuffer[count];
 
     memcpy(outbuffer, elems, count*sizeof(testdata_t));
@@ -116,7 +119,11 @@ static void double_elems(const void* elems, size_t count, pipe_producer_t* out, 
     pipe_push(out, outbuffer, count);
 }
 
+#ifdef DEBUG
+#define MAX_NUM     250000
+#else
 #define MAX_NUM     500000
+#endif
 
 static void generate_test_data(pipe_producer_t* p)
 {
