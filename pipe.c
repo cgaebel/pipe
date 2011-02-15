@@ -285,7 +285,7 @@ typedef volatile LONG atomic_t;
 struct pipe_t {
     size_t elem_size,  // The size of each element. This is read-only and
                        // therefore does not need to be locked to read.
-           capacity,   // The maximum number of elements the buffer can hold
+           capacity,   // The maximum number of bytes the buffer can hold
                        // before a reallocation. To modify this variable, you
                        // must lock the whole pipe.
            min_cap,    // The smallest sane capacity before the buffer refuses
@@ -296,12 +296,8 @@ struct pipe_t {
                        // need to be locked to read. To modify this variable,
                        // you must lock the whole pipe.
 
-    char * buffer,     // The internal buffer, holding the enqueued elements. To
+    char * buffer;     // The internal buffer, holding the enqueued elements. To
                        // modify this variable, you must lock the whole pipe.
-         * bufend;     // Just a shortcut pointer to the end of the buffer. To
-                       // modify this variable, you must lock the whole pipe.
-                       // It helps me avoid constantly typing
-                       // (p->buffer + p->elem_size*p->capacity).
 
     // Keep the shared variables away from the cache-aligned ones.
     PAD(64 - 5*sizeof(size_t) - 2*sizeof(char*));
@@ -342,13 +338,6 @@ struct pipe_t {
 #define DEFAULT_MINCAP  32
 #endif
 
-// Moves bufend to the end of the buffer, assuming buffer, capacity, and
-// elem_size are all sane.
-static inline void fix_bufend(pipe_t* p)
-{
-    p->bufend = p->buffer + p->elem_size * p->capacity;
-}
-
 // Does the buffer wrap around?
 //   true  -> wrap
 //   false -> nowrap
@@ -357,17 +346,21 @@ static inline bool wraps_around(const char* begin, const char* end)
     return begin > end;
 }
 
-static inline size_t get_elem_count(const pipe_t* p)
+// Returns the number of bytes currently in the buffer, NOT the capacity of the
+// buffer. XXX: Is there a better name for this? I feel like it's misleading.
+static inline size_t get_buffer_size(const pipe_t* p)
 {
+    size_t capacity = p->capacity;
+
     const char* begin = p->begin,
               * end = p->end,
               * buffer = p->buffer,
-              * bufend = p->bufend;
+              * bufend = buffer + capacity;
 
     return (size_t)(wraps_around(begin, end)
+    //                  v right half v   v  left half   v
                      ? ((end - buffer) + (bufend - begin))
-                     : (end - begin))
-             / p->elem_size; // oh god an IDIV. Is there any way to avoid this?
+                     : (end - begin));
 }
 
 #define WRAP_PTR_IF_NECESSARY(ptr) ((ptr) = (ptr) == bufend ? buffer : (ptr))
@@ -423,27 +416,24 @@ static inline void check_invariants(const pipe_t* p)
         assertume(p->consumer_refcount != 0);
     }
 
-    assertume(p->bufend);
     assertume(p->begin);
     assertume(p->end);
 
     assertume(p->elem_size != 0);
 
-    assertume(get_elem_count(p) <= p->capacity
+    assertume(get_buffer_size(p) <= p->capacity
             && "There are more elements in the buffer than its capacity.");
-    assertume(p->bufend == p->buffer + p->elem_size*p->capacity
-            && "This is axiomatic. Was fix_bufend not called somewhere?");
 
-    assertume(in_bounds(p->buffer, p->begin, p->bufend));
-    assertume(in_bounds(p->buffer, p->end, p->bufend));
+    assertume(in_bounds(p->buffer, p->begin, p->buffer + p->capacity));
+    assertume(in_bounds(p->buffer, p->end, p->buffer + p->capacity));
 
     if(p->begin == p->end)
-        assertume(get_elem_count(p) == 0);
+        assertume(get_buffer_size(p) == 0);
 
-    assertume(in_bounds(DEFAULT_MINCAP, p->min_cap, p->max_cap));
+    assertume(in_bounds(DEFAULT_MINCAP*p->elem_size, p->min_cap, p->max_cap));
     assertume(in_bounds(p->min_cap, p->capacity, p->max_cap));
 
-    assertume(p->begin != p->bufend
+    assertume(p->begin != p->buffer + p->capacity
             && "The begin pointer should NEVER point to the end of the buffer."
                "If it does, it should have been automatically moved to the front.");
 }
@@ -483,17 +473,22 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
 
     pipe_t* p = malloc(sizeof *p);
 
-    size_t cap = DEFAULT_MINCAP;
+    size_t cap = DEFAULT_MINCAP * elem_size;
     char* buf  = malloc(elem_size * cap);
+
+    // Change the limit from being in "elements" to being in "bytes".
+    limit *= elem_size;
+
+    if(unlikely(p == NULL || buf == NULL))
+        return NULL;
 
     *p = (pipe_t) {
         .elem_size  = elem_size,
         .capacity = cap,
-        .min_cap = DEFAULT_MINCAP,
+        .min_cap = cap,
         .max_cap = limit ? next_pow2(max(limit, cap)) : ~(size_t)0,
 
         .buffer = buf,
-        .bufend = buf + elem_size * cap,
         .begin  = buf,
         .end    = buf,
 
@@ -534,8 +529,6 @@ static inline void deallocate(pipe_t* p)
 {
     assertume(p->producer_refcount == 0);
     assertume(p->consumer_refcount == 0);
-
-    unlock_pipe(p);
 
     mutex_destroy(&p->begin_lock);
     mutex_destroy(&p->end_lock);
@@ -631,7 +624,7 @@ static inline char* copy_pipe_into_new_buf(const pipe_t* p,
     const char* const begin  = p->begin,
               * const end    = p->end,
               * const buffer = p->buffer,
-              * const bufend = p->bufend;
+              * const bufend = buffer + p->capacity;
 
     if(wraps_around(begin, end))
     {
@@ -651,10 +644,9 @@ static void resize_buffer(pipe_t* p, size_t new_size)
     check_invariants(p);
 
     const size_t max_cap    = p->max_cap,
-                 min_cap    = p->min_cap,
-                 elem_size  = p->elem_size;
+                 min_cap    = p->min_cap;
 
-    assertume(new_size >= get_elem_count(p));
+    assertume(new_size >= get_buffer_size(p));
 
     if(unlikely(new_size >= max_cap))
         new_size = max_cap;
@@ -662,33 +654,33 @@ static void resize_buffer(pipe_t* p, size_t new_size)
     if(new_size < min_cap)
         return;
 
-    char* new_buf = malloc(new_size * elem_size);
+    char* new_buf = malloc(new_size);
     p->end = copy_pipe_into_new_buf(p, new_buf);
 
-    free(p->buffer);
+    p->begin  =
+    p->buffer = (free(p->buffer), new_buf);
 
-    p->begin = p->buffer = new_buf;
     p->capacity = new_size;
-
-    fix_bufend(p);
 
     check_invariants(p);
 }
 
-// Ensures the buffer has enough room for `count' more elements. This function
+// Ensures the buffer has enough room for `count' more bytes. This function
 // assumes p->end_lock is locked.
 static inline void validate_size(pipe_t* p, size_t count)
 {
+    size_t elem_size = p->elem_size;
+
     // We add 1 to ensure p->begin != p->end unless p->elem_count == 0,
     // maintaining one of our invariants.
-    if(unlikely(get_elem_count(p) + count + 1 > p->capacity))
+    if(unlikely(get_buffer_size(p) + count + elem_size > p->capacity))
     {
         // upgrade our lock, then re-check. By taking both locks (end and begin)
         // in order, we have an equivalent operation to lock_pipe().
         mutex_lock(&p->begin_lock);
 
-        if(likely(get_elem_count(p) + count + 1 > p->capacity))
-            resize_buffer(p, next_pow2(get_elem_count(p) + count));
+        if(likely(get_buffer_size(p) + count + elem_size > p->capacity))
+            resize_buffer(p, next_pow2(get_buffer_size(p) + count + elem_size));
 
         mutex_unlock(&p->begin_lock);
     }
@@ -696,21 +688,18 @@ static inline void validate_size(pipe_t* p, size_t count)
 
 static inline void process_push(pipe_t* p,
                                 const void* restrict elems,
-                                size_t count)
+                                size_t bytes_to_copy)
 {
-    assertume(count != 0);
+    assertume(bytes_to_copy != 0);
 
-    // Since we should have grown the buffer by now (if necessary), we KNOW we
-    // have enough room for the push. So do it!
-
-    const size_t elem_size  = p->elem_size;
-
-    size_t bytes_to_copy = count*elem_size;
+    const size_t capacity  = p->capacity;
 
     char* const buffer = p->buffer,
-        * const bufend = p->bufend,
         * const begin  = p->begin,
-        *       end    = p->end;
+        *       end    = p->end,
+        * const bufend = buffer + capacity;
+
+    WRAP_PTR_IF_NECESSARY(end);
 
     // If we currently have a nowrap buffer, we may have to wrap the new
     // elements. Copy as many as we can at the end, then start copying into the
@@ -721,7 +710,6 @@ static inline void process_push(pipe_t* p,
         assertume(bufend >= end);
         size_t at_end = min(bytes_to_copy, (size_t)(bufend - end));
 
-        WRAP_PTR_IF_NECESSARY(end);
         end = offset_memcpy(end, elems, at_end);
 
         elems = (const char*)elems + at_end;
@@ -735,23 +723,25 @@ static inline void process_push(pipe_t* p,
         end = offset_memcpy(end, elems, bytes_to_copy);
     }
 
+    WRAP_PTR_IF_NECESSARY(end);
+
     // ...and update the end pointer!
     p->end = end;
 }
 
-// Will spin until there is enough room in the buffer to push `count' elements.
+// Will spin until there is enough room in the buffer to push any elements.
 // Returns the number of elements currently in the buffer. `end_lock` should be
 // locked on entrance to this function. This function returns ~(size_t)0 if all
 // consumers were freed, and we must stop pushing.
 static inline size_t wait_for_room(pipe_t* p, size_t* max_cap)
 {
-    size_t elem_count        = get_elem_count(p),
+    size_t buffer_size       = get_buffer_size(p),
            consumer_refcount = p->consumer_refcount;
 
     *max_cap = p->max_cap;
 
-    for(; unlikely(elem_count == *max_cap) && likely(consumer_refcount > 0);
-          elem_count = get_elem_count(p),
+    for(; unlikely(buffer_size == *max_cap) && likely(consumer_refcount > 0);
+          buffer_size = get_buffer_size(p),
           consumer_refcount = p->consumer_refcount,
           *max_cap = p->max_cap)
         cond_wait(&p->just_popped, &p->end_lock);
@@ -759,28 +749,28 @@ static inline size_t wait_for_room(pipe_t* p, size_t* max_cap)
     if(unlikely(consumer_refcount == 0))
         return ~(size_t)0;
 
-    return elem_count;
+    return buffer_size;
 }
 
-void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
+// Peforms the actual pipe_push, but `count' is in "bytes" as opposed to
+// "elements" to simplify processing.
+static inline void pipe_push_bytes(pipe_t* p,
+                                   const void* restrict elems,
+                                   size_t count)
 {
-    pipe_t* p = PIPIFY(prod);
-
     if(unlikely(count == 0))
         return;
-
-    size_t elem_size = p->elem_size;
 
     size_t pushed  = 0;
 
     { mutex_lock(&p->end_lock);
         size_t max_cap = 0;
-        size_t elem_count = wait_for_room(p, &max_cap);
+        size_t buffer_size = wait_for_room(p, &max_cap);
 
         assertume(max_cap != 0);
 
         // if no more consumers...
-        if(unlikely(elem_count == ~(size_t)0))
+        if(unlikely(buffer_size == ~(size_t)0))
         {
             mutex_unlock(&p->end_lock);
             return;
@@ -788,10 +778,10 @@ void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
 
         validate_size(p, count);
 
-        // Finally, we can now begin with pushing as many elements into the queue
-        // as possible.
+        // Finally, we can now begin with pushing as many elements into the
+        // queue as possible.
         process_push(p, elems,
-            pushed = min(count, max_cap - elem_count)
+            pushed = min(count, max_cap - buffer_size)
         );
     } mutex_unlock(&p->end_lock);
 
@@ -801,76 +791,68 @@ void pipe_push(pipe_producer_t* prod, const void* restrict elems, size_t count)
 
     // We might not be done pushing. If the max_cap was reached, we'll need to
     // recurse.
-    size_t elems_remaining = count - pushed;
+    size_t bytes_remaining = count - pushed;
 
-    if(unlikely(elems_remaining))
+    if(unlikely(bytes_remaining))
     {
-        elems = (const char*)elems + pushed*elem_size;
-        pipe_push(prod, elems, elems_remaining);
+        elems = (const char*)elems + pushed;
+        pipe_push_bytes(p, elems, bytes_remaining);
     }
 }
 
+void pipe_push(pipe_producer_t* p, const void* restrict elems, size_t count)
+{
+    pipe_push_bytes(PIPIFY(p), elems, count*PIPIFY(p)->elem_size);
+}
+
 // Waits for at least one element to be in the pipe. p->begin_lock must be
-// locked when entering this function, and the current number of elements
-// is returned.
+// locked when entering this function, and the current buffer size is returned.
 static inline size_t wait_for_elements(pipe_t* p)
 {
-    size_t elem_count = get_elem_count(p);
+    size_t buffer_size = get_buffer_size(p);
 
-    for(; elem_count == 0 && likely(p->producer_refcount > 0);
-          elem_count = get_elem_count(p))
+    for(; buffer_size == 0 && likely(p->producer_refcount > 0);
+          buffer_size = get_buffer_size(p))
         cond_wait(&p->just_pushed, &p->begin_lock);
 
-    return elem_count;
+    return buffer_size;
 }
 
 // wow, I didn't even intend for the name to work like that...
-static inline size_t pop_without_locking(pipe_t* p, size_t elem_count,
-                                         void* restrict target,
-                                         size_t elems_to_copy)
+static inline void pop_without_locking(pipe_t* p,
+                                       void* restrict target,
+                                       size_t bytes_to_copy)
 {
-    size_t const elem_size       = p->elem_size;
-    size_t       bytes_remaining = elems_to_copy * elem_size;
-
-    assertume(bytes_remaining <= elem_count*elem_size);
+    const size_t capacity = p->capacity;
 
     char* const buffer = p->buffer,
-        * const bufend = p->bufend,
-        *       begin  = p->begin;
+        *       begin  = p->begin,
+        * const bufend = buffer + capacity;
+
+    WRAP_PTR_IF_NECESSARY(begin);
 
     // Copy either as many bytes as requested, or the available bytes in the RHS
     // of a wrapped buffer - whichever is smaller.
     {
-        size_t first_bytes_to_copy = min(bytes_remaining, (size_t)(bufend - begin));
+        size_t first_bytes_to_copy = min(bytes_to_copy, (size_t)(bufend - begin));
 
         target = offset_memcpy(target, begin, first_bytes_to_copy);
 
-        bytes_remaining -= first_bytes_to_copy;
-        begin           += first_bytes_to_copy;
+        bytes_to_copy -= first_bytes_to_copy;
+        begin         += first_bytes_to_copy;
 
         WRAP_PTR_IF_NECESSARY(begin);
     }
 
-    if(bytes_remaining > 0)
+    if(bytes_to_copy > 0)
     {
-        memcpy(target, buffer, bytes_remaining);
-        begin += bytes_remaining;
-
-        WRAP_PTR_IF_NECESSARY(begin);
+        memcpy(target, buffer, bytes_to_copy);
+        begin += bytes_to_copy;
     }
-
-    elem_count -= elems_to_copy;
-
-    // This accounts for the odd case where the begin pointer wrapped around and
-    // the end pointer didn't follow it.
-    if(elem_count == 0)
-        p->end = begin;
 
     // Since we cached begin on the stack, we need to reflect our changes back
     // on the pipe.
     p->begin = begin;
-
-    return elems_to_copy;
 }
 
 // If the buffer is shrunk to something a lot smaller than our current
@@ -878,12 +860,15 @@ static inline size_t pop_without_locking(pipe_t* p, size_t elem_count,
 static inline void trim_buffer(pipe_t* p)
 {
     // We have a sane size. We're done here.
-    if(likely(get_elem_count(p) > p->capacity / 4))
+    if(likely(get_buffer_size(p) > p->capacity / 4))
         return;
 
-    // Okay, we need to resize now. Upgrade our lock so we can check again.
+    // Okay, we need to resize now. Upgrade our lock so we can check again. The
+    // weird lock/unlock order is to make sure we always acquire the end_lock
+    // before begin_lock. Deadlock can arise otherwise.
     mutex_unlock(&p->begin_lock);
-    lock_pipe(p);
+    mutex_lock(&p->end_lock);
+    mutex_lock(&p->begin_lock);
 
     // To conserve space like the good computizens we are, we'll shrink
     // our buffer if our memory usage efficiency drops below 25%. However,
@@ -891,7 +876,7 @@ static inline void trim_buffer(pipe_t* p)
     // or pop, we only shrink it to bring us up to a 50% efficiency. A common
     // pipe usage pattern is sudden bursts of pushes and pops. This ensures it
     // doesn't get too time-inefficient.
-    if(likely(get_elem_count(p) <= p->capacity / 4))
+    if(likely(get_buffer_size(p) <= p->capacity / 4))
         resize_buffer(p, p->capacity / 2);
 
     // All done. Downgrade our lock so we leave with the same lock-level we came
@@ -900,36 +885,43 @@ static inline void trim_buffer(pipe_t* p)
     mutex_unlock(&p->end_lock);
 }
 
-size_t pipe_pop(pipe_consumer_t* c, void* restrict target, size_t requested)
+static inline size_t pipe_pop_bytes(pipe_t* p,
+                                    void* restrict target,
+                                    size_t requested)
 {
-    pipe_t* p = PIPIFY(c);
-
     if(unlikely(requested == 0))
         return 0;
 
     size_t popped = 0;
 
     { mutex_lock(&p->begin_lock);
-        size_t elem_count = wait_for_elements(p);
+        size_t buffer_size = wait_for_elements(p);
 
-        if(unlikely(elem_count == 0))
+        if(unlikely(buffer_size == 0))
         {
             mutex_unlock(&p->begin_lock);
             return 0;
         }
 
-        popped = pop_without_locking(p, elem_count,
-                                     target, min(requested, elem_count));
+        pop_without_locking(p, target,
+                            popped = min(requested, buffer_size)
+        );
 
         trim_buffer(p);
     } mutex_unlock(&p->begin_lock);
 
     assertume(popped);
 
-    (popped == 1 ? cond_signal : cond_broadcast)(&p->just_popped);
+    (popped == p->elem_size ? cond_signal : cond_broadcast)(&p->just_popped);
 
     return popped +
-        pipe_pop(c, (char*)target + popped*p->elem_size, requested - popped);
+        pipe_pop_bytes(p, (char*)target + popped, requested - popped);
+}
+
+size_t pipe_pop(pipe_consumer_t* p, void* restrict target, size_t count)
+{
+    size_t elem_size = PIPIFY(p)->elem_size;
+    return pipe_pop_bytes(PIPIFY(p), target, count*elem_size) / elem_size;
 }
 
 size_t pipe_elem_size(pipe_generic_t* p)
@@ -941,13 +933,15 @@ void pipe_reserve(pipe_generic_t* gen, size_t count)
 {
     pipe_t* p = PIPIFY(gen);
 
+    count *= p->elem_size; // now `count' is in "bytes" instead of "elements".
+
     if(count == 0)
         count = DEFAULT_MINCAP;
 
     size_t max_cap = p->max_cap;
 
     WHILE_LOCKED(
-        if(unlikely(count <= get_elem_count(p)))
+        if(unlikely(count <= get_buffer_size(p)))
             break;
 
         p->min_cap = min(count, max_cap);
