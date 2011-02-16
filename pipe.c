@@ -296,11 +296,11 @@ struct pipe_t {
                        // need to be locked to read. To modify this variable,
                        // you must lock the whole pipe.
 
-    char * buffer;     // The internal buffer, holding the enqueued elements. To
+    char* buffer;      // The internal buffer, holding the enqueued elements. To
                        // modify this variable, you must lock the whole pipe.
 
     // Keep the shared variables away from the cache-aligned ones.
-    PAD(64 - 5*sizeof(size_t) - 2*sizeof(char*));
+    PAD(64 - 4*sizeof(size_t) - sizeof(char*));
 
     ALIGN_TO_CACHE(char*, begin);   // Always points to the left-most element
                                     // in the pipe. To modify this variable,
