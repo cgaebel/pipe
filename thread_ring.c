@@ -30,7 +30,7 @@ static void* thread_func(void* context)
     {
         if(buf == 0)
         {
-            printf("N = %i.\n", ctx->threadnumber);
+            printf("%i\n", ctx->threadnumber);
             exit(0);
         }
 
