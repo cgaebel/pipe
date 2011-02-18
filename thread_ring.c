@@ -1,3 +1,7 @@
+/*
+ * thread_ring.c - The classic `thread ring' benchmark, using pipes as its
+ *                 communication medium.
+ */
 #include "pipe.h"
 
 #include <stdio.h>
