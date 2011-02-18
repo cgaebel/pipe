@@ -5,7 +5,7 @@ NAME=pipe
 
 CFLAGS=-Wall -Wextra -Wpointer-arith -fstrict-aliasing -std=c99 -DFORTIFY_SOURCE=2 -pipe -pedantic #-Werror
 D_CFLAGS=-DDEBUG -g -O0
-R_CFLAGS=-DNDEBUG -O3 -funroll-loops -pg #-flto
+R_CFLAGS=-DNDEBUG -O3 -funroll-loops #-pg #-flto
 
 target = $(shell sh -c '$(CC) -v 2>&1 | grep "Target:"')
 
