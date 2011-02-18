@@ -187,15 +187,8 @@ static void mutex_lock(mutex_t* m)
 
 typedef size_t atomic_t;
 
-static inline size_t atomic_inc(volatile atomic_t* a)
-{
-    return __sync_add_and_fetch(a, 1);
-}
-
-static inline size_t atomic_dec(volatile atomic_t* a)
-{
-    return __sync_sub_and_fetch(a, 1);
-}
+#define atomic_inc(a) __sync_add_and_fetch((a), 1)
+#define atomic_dec(a) __sync_sub_and_fetch((a), 1)
 
 #elif defined(_WIN32) || defined(_WIN64)
 
@@ -503,13 +496,13 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     pipe_t* p = malloc(sizeof *p);
 
     size_t cap = DEFAULT_MINCAP * elem_size;
-    char* buf  = malloc(elem_size * cap);
+    char*  buf = malloc(elem_size * cap);
 
     // Change the limit from being in "elements" to being in "bytes".
     limit *= elem_size;
 
     if(unlikely(p == NULL || buf == NULL))
-        return NULL;
+        return free(p), free(buf), NULL;
 
     *p = (pipe_t) {
         .elem_size  = elem_size,
@@ -569,8 +562,6 @@ static void deallocate(pipe_t* p)
     free(p);
 }
 
-#define x_free(p) (free(p), NULL)
-
 void pipe_free(pipe_t* p)
 {
     assertume(p->producer_refcount > 0);
@@ -581,7 +572,7 @@ void pipe_free(pipe_t* p)
 
     if(unlikely(new_consumer_refcount == 0))
     {
-        p->buffer = x_free(p->buffer);
+        p->buffer = (free(p->buffer), NULL);
 
         if(unlikely(new_producer_refcount == 0))
         {
@@ -632,7 +623,7 @@ void pipe_consumer_free(pipe_consumer_t* handle)
 
     if(unlikely(new_consumer_refcount == 0))
     {
-        p->buffer = x_free(p->buffer);
+        p->buffer = (free(p->buffer), NULL);
 
         // If there are still producers, wake them up if they're waiting on
         // room to free up from a consumer. Otherwise, since we're the last
@@ -738,7 +729,6 @@ static inline void process_push(snapshot_t s,
     // buffers, which can be dealt with using a single offset_memcpy.
     if(!wraps_around(s.begin, s.end))
     {
-        assertume(s.bufend >= s.end);
         size_t at_end = min(bytes_to_copy, (size_t)(s.bufend - s.end));
 
         s.end = offset_memcpy(s.end, elems, at_end);
@@ -754,8 +744,6 @@ static inline void process_push(snapshot_t s,
         s.end = wrap_ptr_if_necessary(s.buffer, s.end, s.bufend);
         s.end = offset_memcpy(s.end, elems, bytes_to_copy);
     }
-
-    assert(in_bounds(s.buffer, s.end, s.bufend));
 
     s.end = wrap_ptr_if_necessary(s.buffer, s.end, s.bufend);
 
