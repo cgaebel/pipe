@@ -24,20 +24,23 @@ static void* thread_func(void* context)
 {
     thread_context_t* ctx = context;
 
-    int buf = 0;
+    int n = 0;
 
-    while(pipe_pop(ctx->in, &buf, 1))
+    while(pipe_pop(ctx->in, &n, 1))
     {
-        if(buf == 0)
+        if(n == 0)
         {
             printf("%i\n", ctx->threadnumber);
-            exit(0);
+            break;
         }
 
-        --buf;
+        --n;
 
-        pipe_push(ctx->out, &buf, 1);
+        pipe_push(ctx->out, &n, 1);
     }
+
+    pipe_producer_free(ctx->out);
+    pipe_consumer_free(ctx->in);
 
     return NULL;
 }
@@ -83,6 +86,8 @@ int main(int argc, char** argv)
         .in = pipe_consumer_new(last_pipe),
         .out = first
     };
+
+    pipe_free(last_pipe);
 
     spawn_thread(contexts + THREADS - 1);
 

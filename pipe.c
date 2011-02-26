@@ -663,7 +663,7 @@ static snapshot_t resize_buffer(pipe_t* p, size_t new_size)
         new_size = max_cap;
 
     if(new_size < min_cap)
-        return;
+        return make_snapshot(p);
 
     char* new_buf = malloc(new_size);
     p->end = copy_pipe_into_new_buf(make_snapshot(p), new_buf);
@@ -675,7 +675,7 @@ static snapshot_t resize_buffer(pipe_t* p, size_t new_size)
 
     check_invariants(p);
 
-    return make_snapshot(s);
+    return make_snapshot(p);
 }
 
 // Ensures the buffer has enough room for `count' more bytes. This function
