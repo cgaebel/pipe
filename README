@@ -195,25 +195,17 @@ this README accordingly.
 Branch information
 -------------------
 
-Currently, there are three branches of the code.
+Currently, there are two branches of the code.
 
-single_mutex is the stable version, and the easiest to read. It is "done"
+master contains the fastest code. However, it is not necessarily the most
+readable. It uses two mutexes: one for pushing, and one for popping. This
+allows for excellent single-writer single-reader performance. It is "done"
+in terms of the only new code going into it is bufixes and performance
+tweaks. If you want to use pipe in your code, you want to checkout this
+branch.
+
+single_mutex is the simplest version, and the easiest to read. It is "done"
 in terms of the only new code going into it is bugfixes. It implements
-the queue with a single god-mutex which is simple in practice, but may
-not necessarily be the best decision to maximize concurrency. If you want
-to use pipe in your code, you want this branch.
-
-two_mutex is currently in development as the successor to single_mutex.
-Instead of using a single god-mutex, it uses two of them: one for
-pushing, the other for popping. This keeps the single consumer/producer
-case blazing fast. This version is far from stable, and a lot more
-complex than single_mutex. Unless the complexity can be controlled,
-two_mutex may never be merged in.
-
-lock_free is currently in development as the successor to two_mutex. It
-scraps the mutex design altogether for a lock-free, CAS based approach.
-It is orders of magnitude more complex than single_mutex and two_mutex,
-so will most likely never work perfectly or be readable to a point where
-I would be comfortable with people using it in production code. It is
-the epitome of experimental, research code. Don't even think about using
-this in your project; it will probably be too buggy for any level of use.
+the queue with a single god-mutex which is simple in practice, but is not
+the most concurrent design decision. If you want to read over an initial
+proof-of-concept (and very elegant C), you want to checkout this branch.
