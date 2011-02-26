@@ -65,6 +65,8 @@ const char _pipe_copyright[] =
     #define assertume assert
 #endif // NDEBUG
 
+#define CACHE_LINE 64
+
 // Adds padding to a struct of `amount' bytes.
 #define PAD1(amount, line) char _pad_##line[(amount)]
 #define PAD0(amount, line) PAD1(amount, line)
@@ -72,7 +74,7 @@ const char _pipe_copyright[] =
 
 // Pads a variable of type `type' to a 64-byte cache line, to prevent false
 // sharing.
-#define ALIGN_TO_CACHE(type, name) type name; PAD(64 - sizeof(type))
+#define ALIGN_TO_CACHE(type, name) type name; PAD(CACHE_LINE - sizeof(type))
 
 // The number of spins to do before performing an expensive kernel-mode context
 // switch. This is a nice easy value to tweak for your application's needs. Set
@@ -287,7 +289,7 @@ struct pipe_t {
                        // To modify this variable, you must lock end_lock.
 
     // Keep the shared variables away from the cache-aligned ones.
-    PAD(64 - 4*sizeof(size_t) - 3*sizeof(char*));
+    PAD(CACHE_LINE - 4*sizeof(size_t) - 3*sizeof(char*));
 
     // The number of producers in circulation. Only modify this variable with
     // atomic_[inc|dec].
@@ -393,7 +395,10 @@ static size_t CONSTEXPR next_pow2(size_t n)
     // Since we don't have to worry about overflow anymore, we can just use
     // the algorithm documented at:
     //   http://bits.stephan-brumme.com/roundUpToNextPowerOfTwo.html
-    // It's my favorite due to being branch-free. The loop will be unrolled.
+    // It's my favorite due to being branch-free (the loop will be unrolled),
+    // and portable. However, on x86, it will be faster to use the BSR (bit-scan
+    // reverse) instruction. Since this isn't straight C, it has been omitted,
+    // but may be best for your platform.
     n--;
 
     for(size_t shift = 1; shift < (sizeof n)*8; shift <<= 1)
@@ -479,10 +484,8 @@ size_t pipe_elem_size(pipe_generic_t* p)
 // runs some code while automatically locking and unlocking the pipe. If `break'
 // is used, the pipe will be unlocked before control returns from the macro.
 #define WHILE_LOCKED(stuff) do { \
-    do {                         \
-        lock_pipe(p);            \
-        stuff;                   \
-    } while(0);                  \
+    lock_pipe(p);                \
+    do { stuff; } while(0);      \
     unlock_pipe(p);              \
  } while(0)
 

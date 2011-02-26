@@ -45,7 +45,6 @@ analyze: $(OBJS) pipe_debug pipe_release
 	valgrind ./pipe_release
 	valgrind --tool=cachegrind ./pipe_release
 	valgrind --tool=massif ./pipe_release
-	valgrind --tool=ptrcheck ./pipe_release
 
 clean:
 	rm -f *.plist pipe_debug pipe_release
