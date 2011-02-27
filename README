@@ -165,7 +165,8 @@ There are a few things you can do to get the most speed out of the pipe.
    a push/pop of many small structs.
  9 Read through the source code, and find bottlenecks! Don't forget to
    submit changes upstream, so the rest of the world can be in awe of
-   your speed-hackery.
+   your speed-hackery. I have also left a couple optimization hints
+   in-source as a reward for actually reading it.
 
 API Overview
 -------------
