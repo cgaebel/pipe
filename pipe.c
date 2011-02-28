@@ -346,7 +346,7 @@ static inline bool wraps_around(snapshot_t s)
 // Returns the number of bytes currently in use in the buffer.
 static inline size_t bytes_in_use(snapshot_t s)
 {
-    return wraps_around(s)
+    return unlikely(wraps_around(s))
     //         v   right half   v   v     left half    v
             ? ((s.end - s.buffer) + (s.bufend - s.begin))
             : (s.end - s.begin);
