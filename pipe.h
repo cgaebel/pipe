@@ -64,8 +64,8 @@ extern "C" {
  *
  *   pipe_t* p = pipe_new(sizeof(int));
  *
- *   producer_t* pros[THREADS] = { pipe_producer_new(p) };
- *   consumer_t* cons[THREADS] = { pipe_consumer_new(p) };
+ *   pipe_producer_t* pros[THREADS] = { pipe_producer_new(p) };
+ *   pipe_consumer_t* cons[THREADS] = { pipe_consumer_new(p) };
  *
  *   pipe_free(p);
  *
@@ -78,22 +78,23 @@ extern "C" {
  *     pipe_consumer_free(pros[i]);
  *   }
  *
- * producer_t
+ * pipe_producer_t
  *
- * producer_t is used for pushing into the pipe. It is recommended that each
- * thread has their own (as it keeps ownership semantics simple); however, it
- * is not mandatory. As long as there is at least one producer_t in circulation,
- * consumers will block until they can fill their buffers. A pipe_t also counts
- * as a producer_t, since valid producer_t handles can be created from it.
+ * pipe_producer_t is used for pushing into the pipe. It is recommended that
+ * each thread has their own (as it keeps ownership semantics simple); however,
+ * it is not mandatory. As long as there is at least one pipe_producer_t in
+ * circulation, consumers will block until they can fill their buffers. A
+ * pipe_t also counts as a pipe_producer_t, since valid pipe_producer_t handles
+ * can be created from it.
  *
- * consumer_t
+ * pipe_consumer_t
  *
- * consumer_t is used for popping from the pipe. It is recommended that each
- * thread has their own (as it keeps ownership semantics simple), however, it
- * is not mandatory. As long as there is at least one producer_t or pipe_t in
- * circulation, a consumer_t will block until the buffer can be filled. A
- * pipe_t also counts as a consumer_t, since valid consumer_t handles can be
- * created from it.
+ * pipe_consumer_t is used for popping from the pipe. It is recommended that
+ * each thread has their own (as it keeps ownership semantics simple), however,
+ * it is not mandatory. As long as there is at least one pipe_producer_t or
+ * pipe_t in circulation, consumers will block until the buffer can be filled.
+ * A pipe_t also counts as a pipe_consumer_t, since valid pipe_consumer_t
+ * handles can be created from it.
  *
  * Sample code:
  *
@@ -101,7 +102,7 @@ extern "C" {
  *
  * #define BUFSIZE 1024
  *
- * void do_stuff(consumer_t* p)
+ * void do_stuff(pipe_consumer_t* p)
  * {
  *   int buf[BUFSIZE];
  *   size_t bytes_read;

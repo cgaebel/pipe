@@ -340,13 +340,13 @@ static inline size_t capacity(snapshot_t s)
 //   false -> nowrap
 static inline bool wraps_around(snapshot_t s)
 {
-    return s.begin > s.end;
+    return unlikely(s.begin > s.end);
 }
 
 // Returns the number of bytes currently in use in the buffer.
 static inline size_t bytes_in_use(snapshot_t s)
 {
-    return unlikely(wraps_around(s))
+    return wraps_around(s)
     //         v   right half   v   v     left half    v
             ? ((s.end - s.buffer) + (s.bufend - s.begin))
             : (s.end - s.begin);
@@ -722,7 +722,7 @@ static inline void process_push(snapshot_t s,
 
 
     // Now copy any remaining data...
-    if(bytes_to_copy)
+    if(unlikely(bytes_to_copy))
     {
         s.end = wrap_ptr_if_necessary(s.buffer, s.end, s.bufend);
         s.end = offset_memcpy(s.end, elems, bytes_to_copy);
@@ -794,7 +794,7 @@ static inline void pipe_push_bytes(pipe_t* p,
 
     assertume(pushed > 0);
 
-    if(pushed == 1)
+    if(unlikely(pushed == 1))
         cond_signal(&p->just_pushed);
     else
         cond_broadcast(&p->just_pushed);
@@ -824,7 +824,7 @@ static inline snapshot_t wait_for_elements(pipe_t* p)
 
     size_t bytes_used = bytes_in_use(s);
 
-    for(; bytes_used == 0 && likely(p->producer_refcount > 0);
+    for(; unlikely(bytes_used == 0) && likely(p->producer_refcount > 0);
           s = make_snapshot(p),
           bytes_used = bytes_in_use(s))
         cond_wait(&p->just_pushed, &p->begin_lock);
@@ -856,7 +856,7 @@ static inline snapshot_t pop_without_locking(snapshot_t s,
         s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
     }
 
-    if(bytes_to_copy > 0)
+    if(unlikely(bytes_to_copy > 0))
     {
         memcpy(target, s.buffer, bytes_to_copy);
         s.begin += bytes_to_copy;
@@ -910,7 +910,7 @@ static inline size_t pipe_pop_bytes(pipe_t* p,
                                     void* restrict target,
                                     size_t requested)
 {
-    if(requested == 0)
+    if(unlikely(requested == 0))
         return 0;
 
     size_t popped = 0;
@@ -935,13 +935,16 @@ static inline size_t pipe_pop_bytes(pipe_t* p,
 
     assertume(popped);
 
-    if(popped == __pipe_elem_size(p))
+    if(unlikely(popped == __pipe_elem_size(p)))
         cond_signal(&p->just_popped);
     else
         cond_broadcast(&p->just_popped);
 
-    return popped +
-        pipe_pop_bytes(p, (char*)target + popped, requested - popped);
+    if(likely(requested - popped == 0))
+        return popped;
+    else
+        return popped +
+            pipe_pop_bytes(p, (char*)target + popped, requested - popped);
 }
 
 size_t pipe_pop(pipe_consumer_t* p, void* restrict target, size_t count)
