@@ -43,6 +43,7 @@ analyze: $(OBJS) pipe_debug pipe_release
 	clang --analyze $(CFLAGS) $(OBJS)
 	valgrind ./pipe_debug
 	valgrind ./pipe_release
+	valgrind --tool=callgrind --dump-instr=yes --trace-jump=yes ./pipe_release
 	valgrind --tool=cachegrind ./pipe_release
 	valgrind --tool=massif ./pipe_release
 

@@ -49,10 +49,12 @@ const char _pipe_copyright[] =
 #define likely(cond)   __builtin_expect(!!(cond), 1)
 #define unlikely(cond) __builtin_expect(  (cond), 0)
 #define CONSTEXPR __attribute__((const))
+#define PURE      __attribute__((pure))
 #else
 #define likely(cond)   (cond)
 #define unlikely(cond) (cond)
 #define CONSTEXPR
+#define PURE
 #endif
 
 #ifdef NDEBUG
@@ -158,18 +160,7 @@ static inline void cond_wait(cond_t* c, mutex_t* m)
 
 #define mutex_init(m)  pthread_mutex_init((m), NULL)
 
-// Since we can't use condition variables on spinlocks, we'll roll our own
-// spinlocks out of trylocks! This gave me a 25% improvement in the execution
-// speed of the test suite.
-static void mutex_lock(mutex_t* m)
-{
-    for(size_t i = 0; i < MUTEX_SPINS; ++i)
-        if(pthread_mutex_trylock(m) == 0)
-            return;
-
-    pthread_mutex_lock(m);
-}
-
+#define mutex_lock     pthread_mutex_lock
 #define mutex_unlock   pthread_mutex_unlock
 #define mutex_destroy  pthread_mutex_destroy
 
@@ -472,17 +463,14 @@ static inline void unlock_pipe(pipe_t* p)
     mutex_unlock(&p->end_lock);
 }
 
-// We use this instead of accessing p->elem_size directly, since we can annotate
-// this function with CONSTEXPR. This helps us help the compiler remove
-// unnecessary accesses to p->elem_size.
-static inline size_t CONSTEXPR _pipe_elem_size(pipe_t* p)
+static inline PURE size_t __pipe_elem_size(pipe_t* p)
 {
     return p->elem_size;
 }
 
 size_t pipe_elem_size(pipe_generic_t* p)
 {
-    return _pipe_elem_size(PIPIFY(p));
+    return __pipe_elem_size(PIPIFY(p));
 }
 
 // runs some code while automatically locking and unlocking the pipe. If `break'
@@ -682,7 +670,7 @@ static snapshot_t resize_buffer(pipe_t* p, size_t new_size)
 // assumes p->end_lock is locked. Returns a valid snapshot of the pipe.
 static inline snapshot_t validate_size(pipe_t* p, snapshot_t s, size_t count)
 {
-    size_t elem_size    = _pipe_elem_size(p),
+    size_t elem_size    = __pipe_elem_size(p),
            cap          = capacity(s),
            bytes_needed = bytes_in_use(s) + count + elem_size;
 
@@ -824,7 +812,7 @@ static inline void pipe_push_bytes(pipe_t* p,
 
 void pipe_push(pipe_producer_t* p, const void* restrict elems, size_t count)
 {
-    count *= _pipe_elem_size(PIPIFY(p));
+    count *= __pipe_elem_size(PIPIFY(p));
     pipe_push_bytes(PIPIFY(p), elems, count);
 }
 
@@ -947,7 +935,7 @@ static inline size_t pipe_pop_bytes(pipe_t* p,
 
     assertume(popped);
 
-    if(popped == _pipe_elem_size(p))
+    if(popped == __pipe_elem_size(p))
         cond_signal(&p->just_popped);
     else
         cond_broadcast(&p->just_popped);
@@ -958,7 +946,7 @@ static inline size_t pipe_pop_bytes(pipe_t* p,
 
 size_t pipe_pop(pipe_consumer_t* p, void* restrict target, size_t count)
 {
-    size_t elem_size = _pipe_elem_size(PIPIFY(p));
+    size_t elem_size = __pipe_elem_size(PIPIFY(p));
     return pipe_pop_bytes(PIPIFY(p), target, count*elem_size) / elem_size;
 }
 
@@ -966,7 +954,7 @@ void pipe_reserve(pipe_generic_t* gen, size_t count)
 {
     pipe_t* p = PIPIFY(gen);
 
-    count *= _pipe_elem_size(p); // now `count' is in "bytes" instead of "elements".
+    count *= __pipe_elem_size(p); // now `count' is in "bytes" instead of "elements".
 
     if(count == 0)
         count = DEFAULT_MINCAP;
