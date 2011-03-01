@@ -760,9 +760,9 @@ static inline snapshot_t wait_for_room(pipe_t* p, size_t* max_cap)
 
 // Peforms the actual pipe_push, but `count' is in "bytes" as opposed to
 // "elements" to simplify processing.
-static inline void pipe_push_bytes(pipe_t* p,
-                                   const void* restrict elems,
-                                   size_t count)
+static inline void __pipe_push(pipe_t* p,
+                               const void* restrict elems,
+                               size_t count)
 {
     if(unlikely(count == 0))
         return;
@@ -806,14 +806,14 @@ static inline void pipe_push_bytes(pipe_t* p,
     if(unlikely(bytes_remaining))
     {
         elems = (const char*)elems + pushed;
-        pipe_push_bytes(p, elems, bytes_remaining);
+        __pipe_push(p, elems, bytes_remaining);
     }
 }
 
 void pipe_push(pipe_producer_t* p, const void* restrict elems, size_t count)
 {
     count *= __pipe_elem_size(PIPIFY(p));
-    pipe_push_bytes(PIPIFY(p), elems, count);
+    __pipe_push(PIPIFY(p), elems, count);
 }
 
 // Waits for at least one element to be in the pipe. p->begin_lock must be
@@ -906,9 +906,9 @@ static inline void trim_buffer(pipe_t* p, snapshot_t s)
     mutex_unlock(&p->end_lock);
 }
 
-static inline size_t pipe_pop_bytes(pipe_t* p,
-                                    void* restrict target,
-                                    size_t requested)
+static inline size_t __pipe_pop(pipe_t* p,
+                                void* restrict target,
+                                size_t requested)
 {
     if(unlikely(requested == 0))
         return 0;
@@ -944,13 +944,13 @@ static inline size_t pipe_pop_bytes(pipe_t* p,
         return popped;
     else
         return popped +
-            pipe_pop_bytes(p, (char*)target + popped, requested - popped);
+            __pipe_pop(p, (char*)target + popped, requested - popped);
 }
 
 size_t pipe_pop(pipe_consumer_t* p, void* restrict target, size_t count)
 {
     size_t elem_size = __pipe_elem_size(PIPIFY(p));
-    return pipe_pop_bytes(PIPIFY(p), target, count*elem_size) / elem_size;
+    return __pipe_pop(PIPIFY(p), target, count*elem_size) / elem_size;
 }
 
 void pipe_reserve(pipe_generic_t* gen, size_t count)
