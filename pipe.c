@@ -906,6 +906,8 @@ static inline void trim_buffer(pipe_t* p, snapshot_t s)
     mutex_unlock(&p->end_lock);
 }
 
+// Performs the actual pop, except `requested' is now in bytes as opposed to
+// elements.
 static inline size_t __pipe_pop(pipe_t* p,
                                 void* restrict target,
                                 size_t requested)
