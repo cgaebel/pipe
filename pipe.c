@@ -931,7 +931,7 @@ static inline size_t __pipe_pop(pipe_t* p,
         );
 
         trim_buffer(p, s); // Automatically unlocks p->begin_lock.
-    } 
+    }
 
     assertume(popped);
 
