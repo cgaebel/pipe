@@ -356,10 +356,7 @@ static inline char* wrap_ptr_if_necessary(char* buffer,
                                           char* p,
                                           char* bufend)
 {
-    if(p == bufend)
-        return buffer;
-
-    return p;
+    return p == bufend ? buffer : p;
 }
 
 // Runs a memcpy, then returns the end of the range copied.
@@ -463,6 +460,8 @@ static inline void unlock_pipe(pipe_t* p)
     mutex_unlock(&p->end_lock);
 }
 
+// We wrap elem_size in a function so we can annotate it with PURE, allowing
+// the compiler's CSE to eliminate extraneous memory accesses.
 static inline PURE size_t __pipe_elem_size(pipe_t* p)
 {
     return p->elem_size;
@@ -720,7 +719,6 @@ static inline void process_push(snapshot_t s,
         bytes_to_copy -= at_end;
     }
 
-
     // Now copy any remaining data...
     if(unlikely(bytes_to_copy))
     {
@@ -736,8 +734,7 @@ static inline void process_push(snapshot_t s,
 
 // Will spin until there is enough room in the buffer to push any elements.
 // Returns the number of elements currently in the buffer. `end_lock` should be
-// locked on entrance to this function. This function returns ~(size_t)0 if all
-// consumers were freed, and we must stop pushing.
+// locked on entrance to this function.
 static inline snapshot_t wait_for_room(pipe_t* p, size_t* max_cap)
 {
     snapshot_t s = make_snapshot(p);
@@ -767,13 +764,11 @@ static inline void __pipe_push(pipe_t* p,
     if(unlikely(count == 0))
         return;
 
-    size_t pushed  = 0;
+    size_t pushed = 0;
 
     { mutex_lock(&p->end_lock);
-        size_t max_cap = 0;
+        size_t max_cap;
         snapshot_t s = wait_for_room(p, &max_cap);
-
-        assertume(max_cap != 0);
 
         // if no more consumers...
         if(unlikely(p->consumer_refcount == 0))
@@ -804,10 +799,7 @@ static inline void __pipe_push(pipe_t* p,
     size_t bytes_remaining = count - pushed;
 
     if(unlikely(bytes_remaining))
-    {
-        elems = (const char*)elems + pushed;
-        __pipe_push(p, elems, bytes_remaining);
-    }
+        __pipe_push(p, (const char*)elems + pushed, bytes_remaining);
 }
 
 void pipe_push(pipe_producer_t* p, const void* restrict elems, size_t count)
@@ -872,14 +864,19 @@ static inline snapshot_t pop_without_locking(snapshot_t s,
 }
 
 // If the buffer is shrunk to something a lot smaller than our current
-// capacity, resize it to something sane.
+// capacity, resize it to something sane. This function must be entered with
+// only p->begin_lock locked, and will automatically unlock p->begin_lock on
+// exit.
 static inline void trim_buffer(pipe_t* p, snapshot_t s)
 {
     size_t cap = capacity(s);
 
     // We have a sane size. We're done here.
     if(likely(bytes_in_use(s) > cap / 4))
+    {
+        mutex_unlock(&p->begin_lock);
         return;
+    }
 
     // Okay, we need to resize now. Upgrade our lock so we can check again. The
     // weird lock/unlock order is to make sure we always acquire the end_lock
@@ -900,9 +897,10 @@ static inline void trim_buffer(pipe_t* p, snapshot_t s)
     if(likely(bytes_in_use(s) <= cap / 4))
         resize_buffer(p, cap / 2);
 
-    // All done. Downgrade our lock so we leave with the same lock-level we came
-    // in with. We only need to unlock the extra lock we grabbed. We can keep
-    // the begin_lock locked instead of unlocking then relocking it.
+    // All done. Unlock the pipe. The reason we don't let the calling function
+    // unlock begin_lock is so that we can do it BEFORE end_lock. This prevents
+    // the lock order from being fudged.
+    mutex_unlock(&p->begin_lock);
     mutex_unlock(&p->end_lock);
 }
 
@@ -932,8 +930,8 @@ static inline size_t __pipe_pop(pipe_t* p,
                                 &p->begin
         );
 
-        trim_buffer(p, s);
-    } mutex_unlock(&p->begin_lock);
+        trim_buffer(p, s); // Automatically unlocks p->begin_lock.
+    } 
 
     assertume(popped);
 
