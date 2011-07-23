@@ -174,30 +174,6 @@ static inline void cond_wait(cond_t* c, mutex_t* m)
 
 // End threading.
 
-// Begin atomics.
-
-#if defined(__GNUC__)
-
-typedef size_t atomic_t;
-
-#define atomic_inc(a) __sync_add_and_fetch((a), 1)
-#define atomic_dec(a) __sync_sub_and_fetch((a), 1)
-
-#elif defined(_WIN32) || defined(_WIN64)
-
-#include <windows.h>
-
-typedef LONG atomic_t;
-
-#define atomic_inc InterlockedIncrement
-#define atomic_dec InterlockedDecrement
-
-#else
-#error "We need atomic increment and decrement. Please fill them out for your platform."
-#endif
-
-// End atomics.
-
 /*
  * Pipe implementation overview
  * =================================
@@ -221,6 +197,8 @@ typedef LONG atomic_t;
  * In this case, the data storage is split up, wrapping around to the beginning
  * of the buffer when it hits bufend. Hackery must be done in this case to
  * ensure the structure is maintained and data can be easily copied in/out.
+ *
+ * Data is 'push'ed after the end pointer and 'pop'ed from the begin pointer.
  *
  * Invariants:
  *
@@ -281,21 +259,17 @@ struct pipe_t {
     // Keep the shared variables away from the cache-aligned ones.
     PAD(CACHE_LINE - 3*sizeof(size_t) - 4*sizeof(char*));
 
-    // The number of producers in circulation. Only modify this variable with
-    // atomic_[inc|dec].
-    ALIGN_TO_CACHE(volatile atomic_t, producer_refcount);
-
-    // The number of consumers in circulation. Only modify this variable with
-    // atomic_[inc|dec].
-    ALIGN_TO_CACHE(volatile atomic_t, consumer_refcount);
+    // The number of producers/consumers in the pipe.
+    size_t producer_refcount, // Guarded by begin_lock.
+           consumer_refcount; // Guarded by end_lock.
 
     // Our lovely mutexes. To lock the pipe, call lock_pipe. Depending on what
     // you modify, you may be able to get away with only locking one of them.
-    ALIGN_TO_CACHE(mutex_t, begin_lock);
-    ALIGN_TO_CACHE(mutex_t, end_lock  );
+    mutex_t begin_lock,
+            end_lock;
 
-    ALIGN_TO_CACHE(cond_t, just_pushed); // Signaled immediately after a push.
-    ALIGN_TO_CACHE(cond_t, just_popped); // Signaled immediately after a pop.
+    cond_t just_pushed, // Signaled immediately after a push.
+           just_popped; // Signaled immediately after a pop.
 };
 
 // Converts a pointer to either a producer or consumer into a suitable pipe_t*.
@@ -531,13 +505,19 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
 // malloc calls. Also, since we have to refcount anyways, it's free.
 pipe_producer_t* pipe_producer_new(pipe_t* p)
 {
-    atomic_inc(&p->producer_refcount);
+    mutex_lock(&p->begin_lock);
+        p->producer_refcount++;
+    mutex_unlock(&p->begin_lock);
+
     return (pipe_producer_t*)p;
 }
 
 pipe_consumer_t* pipe_consumer_new(pipe_t* p)
 {
-    atomic_inc(&p->consumer_refcount);
+    mutex_lock(&p->end_lock);
+        p->consumer_refcount++;
+    mutex_unlock(&p->end_lock);
+
     return (pipe_consumer_t*)p;
 }
 
@@ -558,11 +538,18 @@ static void deallocate(pipe_t* p)
 
 void pipe_free(pipe_t* p)
 {
-    assertume(p->producer_refcount > 0);
-    assertume(p->consumer_refcount > 0);
+    size_t new_producer_refcount,
+           new_consumer_refcount;
 
-    atomic_t new_producer_refcount = atomic_dec(&p->producer_refcount),
-             new_consumer_refcount = atomic_dec(&p->consumer_refcount);
+    mutex_lock(&p->begin_lock);
+        assertume(p->producer_refcount > 0);
+        new_producer_refcount = --p->producer_refcount;
+    mutex_unlock(&p->begin_lock);
+
+    mutex_lock(&p->end_lock);
+        assertume(p->consumer_refcount > 0);
+        new_consumer_refcount = --p->consumer_refcount;
+    mutex_unlock(&p->end_lock);
 
     if(unlikely(new_consumer_refcount == 0))
     {
@@ -580,17 +567,25 @@ void pipe_free(pipe_t* p)
 void pipe_producer_free(pipe_producer_t* handle)
 {
     pipe_t* p = PIPIFY(handle);
+    size_t new_producer_refcount;
 
-    assertume(p->producer_refcount > 0);
-
-    atomic_t new_producer_refcount = atomic_dec(&p->producer_refcount);
+    mutex_lock(&p->begin_lock);
+        assertume(p->producer_refcount > 0);
+        new_producer_refcount = --p->producer_refcount;
+    mutex_unlock(&p->begin_lock);
 
     if(unlikely(new_producer_refcount == 0))
     {
+        size_t consumer_refcount;
+
+        mutex_lock(&p->end_lock);
+            consumer_refcount = p->consumer_refcount;
+        mutex_unlock(&p->end_lock);
+
         // If there are still consumers, wake them up if they're waiting on
         // input from a producer. Otherwise, since we're the last handle
         // altogether, we can free the pipe.
-        if(likely(p->consumer_refcount > 0))
+        if(likely(consumer_refcount > 0))
             cond_broadcast(&p->just_pushed);
         else
             deallocate(p);
@@ -600,19 +595,24 @@ void pipe_producer_free(pipe_producer_t* handle)
 void pipe_consumer_free(pipe_consumer_t* handle)
 {
     pipe_t* p = PIPIFY(handle);
+    size_t new_consumer_refcount;
 
-    assertume(p->consumer_refcount > 0);
-
-    atomic_t new_consumer_refcount = atomic_dec(&p->consumer_refcount);
+    mutex_lock(&p->end_lock);
+        new_consumer_refcount = --p->consumer_refcount;
+    mutex_unlock(&p->end_lock);
 
     if(unlikely(new_consumer_refcount == 0))
     {
-        p->buffer = (free(p->buffer), NULL);
+        size_t producer_refcount;
+
+        mutex_lock(&p->begin_lock);
+            producer_refcount = p->producer_refcount;
+        mutex_unlock(&p->begin_lock);
 
         // If there are still producers, wake them up if they're waiting on
         // room to free up from a consumer. Otherwise, since we're the last
         // handle altogether, we can free the pipe.
-        if(likely(p->producer_refcount > 0))
+        if(likely(producer_refcount > 0))
             cond_broadcast(&p->just_popped);
         else
             deallocate(p);
@@ -741,7 +741,7 @@ static inline snapshot_t wait_for_room(pipe_t* p, size_t* max_cap)
 
     size_t bytes_used = bytes_in_use(s);
 
-    atomic_t consumer_refcount = p->consumer_refcount;
+    size_t consumer_refcount = p->consumer_refcount;
 
     *max_cap = p->max_cap;
 
@@ -930,8 +930,8 @@ static inline size_t __pipe_pop(pipe_t* p,
                                 &p->begin
         );
 
-        trim_buffer(p, s); // Automatically unlocks p->begin_lock.
-    }
+        trim_buffer(p, s);
+    } // p->begin_lock was unlocked by trim_buffer.
 
     assertume(popped);
 
