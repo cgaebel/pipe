@@ -67,17 +67,6 @@ const char _pipe_copyright[] =
     #define assertume assert
 #endif // NDEBUG
 
-#define CACHE_LINE 64
-
-// Adds padding to a struct of `amount' bytes.
-#define PAD1(amount, line) char _pad_##line[(amount)]
-#define PAD0(amount, line) PAD1(amount, line)
-#define PAD(amount) PAD0(amount, __LINE__)
-
-// Pads a variable of type `type' to a 64-byte cache line, to prevent false
-// sharing.
-#define ALIGN_TO_CACHE(type, name) type name; PAD(CACHE_LINE - sizeof(type))
-
 // The number of spins to do before performing an expensive kernel-mode context
 // switch. This is a nice easy value to tweak for your application's needs. Set
 // it to 0 if you want the implementation to decide, a low number if you are
@@ -255,9 +244,6 @@ struct pipe_t {
                        // To modify this variable, you must lock begin_lock.
         *  end;        // Always points past the right-most element in the pipe.
                        // To modify this variable, you must lock end_lock.
-
-    // Keep the shared variables away from the cache-aligned ones.
-    PAD(CACHE_LINE - 3*sizeof(size_t) - 4*sizeof(char*));
 
     // The number of producers/consumers in the pipe.
     size_t producer_refcount, // Guarded by begin_lock.
