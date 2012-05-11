@@ -9,7 +9,7 @@
 
 #include <pthread.h>
 
-#define THREADS 503
+#define THREADS 8
 
 typedef struct {
     int threadnumber;

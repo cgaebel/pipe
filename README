@@ -201,7 +201,7 @@ Currently, there are two branches of the code.
 master contains the fastest code. However, it is not necessarily the most
 readable. It uses two mutexes: one for pushing, and one for popping. This
 allows for excellent single-writer single-reader performance. It is "done"
-in terms of the only new code going into it is bufixes and performance
+in terms of the only new code going into it is bugfixes and performance
 tweaks. If you want to use pipe in your code, you want to checkout this
 branch.
 

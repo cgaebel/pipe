@@ -656,8 +656,9 @@ static snapshot_t resize_buffer(pipe_t* p, size_t new_size)
 static inline snapshot_t validate_size(pipe_t* p, snapshot_t s, size_t count)
 {
     size_t elem_size    = __pipe_elem_size(p),
+           new_bytes    = count*elem_size,
            cap          = capacity(s),
-           bytes_needed = bytes_in_use(s) + count + elem_size;
+           bytes_needed = bytes_in_use(s) + new_bytes;
 
     // We add 1 to ensure p->begin != p->end unless p->elem_count == 0,
     // maintaining one of our invariants.
@@ -668,7 +669,7 @@ static inline snapshot_t validate_size(pipe_t* p, snapshot_t s, size_t count)
         { mutex_lock(&p->begin_lock);
 
             s            = make_snapshot(p);
-            bytes_needed = bytes_in_use(s) + count + elem_size;
+            bytes_needed = bytes_in_use(s) + new_bytes;
 
             if(likely(bytes_needed > cap))
                 s = resize_buffer(p, next_pow2(bytes_needed));
