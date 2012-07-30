@@ -181,15 +181,37 @@ void NO_NULL_POINTERS pipe_push(pipe_producer_t*, const void* elems, size_t coun
  * Tries to pop `count' elements out of the pipe and into `target', returning
  * the number of elements successfully copied. This function will block until:
  *
+ * a) `target' has been filled with `count' elements, or
+ * b) all producer_t handles have been freed (including the parent pipe_t).
+ *
+ * If this function returns 0, there will be no more elements coming in. Every
+ * subsequent call will return 0.
+ *
+ * The difference between this function and pipe_pop_eager is that this one will
+ * do its best to fill `target' before returning whereas pipe_pop_eagar will
+ * return as soon as any elements are available.
+ */
+size_t NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_pop(pipe_consumer_t*,
+                                                    void* target,
+                                                    size_t count);
+
+/*
+ * Tries to pop `count' elements out of the pipe and into `target', returning
+ * the number of elements successfully copied. This function will block until:
+ *
  * a) there is at least one element in the pipe.
  * b) all producer_t handles have been freed (including the parent pipe_t).
  *
  * If this function returns 0, there will be no more elements coming in. Every
  * subsequent call will return 0.
+ *
+ * The difference between this function and pipe_pop is that this one will
+ * return as soon as any elements are available, wheras pipe_pop will do its
+ * best to fill `target' first.
  */
-size_t NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_pop(pipe_consumer_t*,
-                                                    void* target,
-                                                    size_t count);
+size_t NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_pop_eagar(pipe_consumer_t*,
+                                                          void* target,
+                                                          size_t count);
 
 /*
  * Modifies the pipe to have room for at least `count' elements. If more room

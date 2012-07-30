@@ -893,6 +893,9 @@ static inline void trim_buffer(pipe_t* p, snapshot_t s)
 
 // Performs the actual pop, except `requested' is now in bytes as opposed to
 // elements.
+//
+// This will behave eagarly, returning as many elements that it can into
+// `target' as it can fill right now.
 static inline size_t __pipe_pop(pipe_t* p,
                                 void* restrict target,
                                 size_t requested)
@@ -927,14 +930,28 @@ static inline size_t __pipe_pop(pipe_t* p,
     else
         cond_broadcast(&p->just_popped);
 
-    if(likely(requested - popped == 0))
-        return popped;
-    else
-        return popped +
-            __pipe_pop(p, (char*)target + popped, requested - popped);
+    return popped;
 }
 
-size_t pipe_pop(pipe_consumer_t* p, void* restrict target, size_t count)
+size_t pipe_pop(pipe_consumer_t* p, void* target, size_t count)
+{
+    size_t elem_size = __pipe_elem_size(PIPIFY(p));
+    
+    size_t bytes_left  = count*elem_size;
+    size_t bytes_popped = 0;
+    size_t ret = -1;
+
+    do {
+        ret = __pipe_pop(PIPIFY(p), target, bytes_left);
+        target = (void*)((char*)target + ret);
+        bytes_popped += ret;
+        bytes_left   -= ret;
+    } while(ret != 0 && bytes_left);
+
+    return bytes_popped / elem_size;
+}
+
+size_t pipe_pop_eagar(pipe_consumer_t* p, void* target, size_t count)
 {
     size_t elem_size = __pipe_elem_size(PIPIFY(p));
     return __pipe_pop(PIPIFY(p), target, count*elem_size) / elem_size;
