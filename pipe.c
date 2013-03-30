@@ -112,22 +112,29 @@ const char _pipe_copyright[] =
 
 #define cond_t          HANDLE
 
-// cond_signal may be the same as cond_broadcast, since our code is resistant to
-// spurious wakeups.
-#define cond_signal     SetEvent
-#define cond_broadcast  SetEvent
-#define cond_destroy    CloseHandle
-
 static inline void cond_init(cond_t* c)
 {
     *c = CreateEvent(NULL, FALSE, FALSE, NULL);
+}
+
+// cond_signal may be the same as cond_broadcast, since our code is resistant to
+// spurious wakeups.
+
+static inline void cond_signal(cond_t* c)
+{
+    SetEvent(*c);
+}
+
+static inline void cond_broadcast(cond_t* c)
+{
+    SetEvent(*c);
 }
 
 static inline void cond_wait(cond_t* c, mutex_t* m)
 {
     mutex_unlock(m);
 
-    // We wait for the signal (which only signals ONE thread), propogate it,
+    // We wait for the signal (which only signals ONE thread), propagate it,
     // then lock our mutex and return. This can potentially lead to a lot of
     // spurious wakeups, but it does not affect the correctness of the code.
     // This method has the advantage of being dead-simple, though.
@@ -135,6 +142,11 @@ static inline void cond_wait(cond_t* c, mutex_t* m)
     cond_signal(c);
 
     mutex_lock(m);
+}
+
+static inline void cond_destroy(cond_t* c)
+{
+    CloseHandle(*c);
 }
 
 #endif /* vista+ */
