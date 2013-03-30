@@ -138,7 +138,7 @@ static inline void cond_wait(cond_t* c, mutex_t* m)
     // then lock our mutex and return. This can potentially lead to a lot of
     // spurious wakeups, but it does not affect the correctness of the code.
     // This method has the advantage of being dead-simple, though.
-    WaitForSingleObject(c, INFINITE);
+    WaitForSingleObject(*c, INFINITE);
     cond_signal(c);
 
     mutex_lock(m);
