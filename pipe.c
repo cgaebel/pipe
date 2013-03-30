@@ -110,43 +110,104 @@ const char _pipe_copyright[] =
 #define mutex_unlock    LeaveCriticalSection
 #define mutex_destroy   DeleteCriticalSection
 
-#define cond_t          HANDLE
+// This Condition variable implementation is stolen from:
+// http://www.cs.wustl.edu/~schmidt/win32-cv-1.html (section 3.3)
 
-static inline void cond_init(cond_t* c)
+typedef struct cond_t {
+    // Count of the number of waiters, with a critical section to serialize
+    // accesses to it.
+    int waiters_count;
+    CRITICAL_SECTION waiters_count_lock;
+
+    // Number of threads to release via a cond_broadcast or a cond_signal.
+    int release_count;
+
+    // Keeps track of the current "generation" so that a single thread can't
+    // steal all the resources from a broadcast.
+    int wait_generation_count;
+
+    // A manual-reset event that's used to block and release waiting threads.
+    HANDLE event;
+} cond_t;
+
+static void cond_init(cond_t* c)
 {
-    *c = CreateEvent(NULL, FALSE, FALSE, NULL);
+    c->waiters_count = 0;
+    InitializeCriticalSection(&c->waiters_count_lock);
+    c->release_count = 0;
+    c->wait_generation_count = 0;
+    c->event = CreateEvent(NULL, true, false, NULL);
 }
 
-// cond_signal may be the same as cond_broadcast, since our code is resistant to
-// spurious wakeups.
-
-static inline void cond_signal(cond_t* c)
+static void cond_signal(cond_t* c)
 {
-    SetEvent(*c);
+    EnterCriticalSection(&c->waiters_count_lock);
+    if(c->waiters_count > c->release_count)
+    {
+        SetEvent(c->event);
+        c->release_count++;
+        c->wait_generation_count++;
+    }
+    LeaveCriticalSection(&c->waiters_count_lock);
 }
 
-static inline void cond_broadcast(cond_t* c)
+static void cond_broadcast(cond_t* c)
 {
-    SetEvent(*c);
+    EnterCriticalSection(&c->waiters_count_lock);
+    if(c->waiters_count > 0)
+    {
+        SetEvent(c->event);
+
+        // Release all the threads in this generation.
+        c->release_count = c->waiters_count;
+        
+        // Start a new generation.
+        c->wait_generation_count++;
+    }
+    LeaveCriticalSection(&c->waiters_count_lock);
 }
 
-static inline void cond_wait(cond_t* c, mutex_t* m)
+static void cond_wait(cond_t* c, mutex_t* m)
 {
+    EnterCriticalSection(&c->waiters_count_lock);
+
+    c->waiters_count++;
+
+    int my_generation = c->wait_generation_count;
+
+    LeaveCriticalSection(&c->waiters_count_lock);
     mutex_unlock(m);
 
-    // We wait for the signal (which only signals ONE thread), propagate it,
-    // then lock our mutex and return. This can potentially lead to a lot of
-    // spurious wakeups, but it does not affect the correctness of the code.
-    // This method has the advantage of being dead-simple, though.
-    WaitForSingleObject(*c, INFINITE);
-    cond_signal(c);
+    bool wait_done;
+
+    do
+    {
+        WaitForSingleObject(c->event, INFINITE);
+
+        EnterCriticalSection(&c->waiters_count_lock);
+        int release_count = c->release_count;
+        int wait_generation_count = c->wait_generation_count;
+        LeaveCriticalSection(&c->waiters_count_lock);
+
+        wait_done = release_count > 0
+                 && wait_generation_count != my_generation;
+    }
+    while(!wait_done);
 
     mutex_lock(m);
+    EnterCriticalSection(&c->waiters_count_lock);
+    c->waiters_count--;
+    int release_count = --c->release_count;
+    LeaveCriticalSection(&c->waiters_count_lock);
+
+    if(release_count == 0) // we're the last waiter
+        ResetEvent(c->event);
 }
 
-static inline void cond_destroy(cond_t* c)
+static void cond_destroy(cond_t* c)
 {
-    CloseHandle(*c);
+    DeleteCriticalSection(&c->waiters_count_lock);
+    CloseHandle(c->event);
 }
 
 #endif /* vista+ */
