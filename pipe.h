@@ -62,7 +62,7 @@ extern "C" {
  *
  *   #define THREADS 4
  *
- *   pipe_t* p = pipe_new(sizeof(int));
+ *   pipe_t* p = pipe_new(sizeof(int), 0);
  *
  *   pipe_producer_t* pros[THREADS] = { pipe_producer_new(p) };
  *   pipe_consumer_t* cons[THREADS] = { pipe_consumer_new(p) };
@@ -75,7 +75,7 @@ extern "C" {
  *   for(int i = 0; i < THREADS; ++i)
  *   {
  *     pipe_producer_free(pros[i]);
- *     pipe_consumer_free(pros[i]);
+ *     pipe_consumer_free(cons[i]);
  *   }
  *
  * pipe_producer_t
@@ -155,13 +155,13 @@ pipe_t* MALLOC_LIKE WARN_UNUSED_RESULT pipe_new(size_t elem_size, size_t limit);
 
 /*
  * Makes a production handle to the pipe, allowing push operations. This
- * function is extremely cheap: it doesn't allocate memory.
+ * function is extremely cheap; it doesn't allocate memory.
  */
 pipe_producer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_producer_new(pipe_t*);
 
 /*
  * Makes a consumption handle to the pipe, allowing pop operations. This
- * function is extremely cheap: it doesn't allocate memory.
+ * function is extremely cheap; it doesn't allocate memory.
  */
 pipe_consumer_t* NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_consumer_new(pipe_t*);
 
@@ -176,6 +176,18 @@ void pipe_consumer_free(pipe_consumer_t*);
 
 /* Copies `count' elements from `elems' into the pipe. */
 void NO_NULL_POINTERS pipe_push(pipe_producer_t*, const void* elems, size_t count);
+
+/*
+ * Copies `count' elements from `elems' into the pipe.
+ *
+ * WARNING: You probably want pipe_push.
+ *
+ * If the pipe is full, this version of pipe_push will automatically pop enough
+ * elements from the front of the queue to make room for the new elements in
+ * the pipe.
+ */
+void NO_NULL_POINTERS pipe_push_clobber(pipe_producer_t*,
+                                        const void* elems, size_t count);
 
 /*
  * Tries to pop `count' elements out of the pipe and into `target', returning
@@ -206,10 +218,10 @@ size_t NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_pop(pipe_consumer_t*,
  * subsequent call will return 0.
  *
  * The difference between this function and pipe_pop is that this one will
- * return as soon as any elements are available, wheras pipe_pop will do its
+ * return as soon as any elements are available, whereas pipe_pop will do its
  * best to fill `target' first.
  */
-size_t NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_pop_eagar(pipe_consumer_t*,
+size_t NO_NULL_POINTERS WARN_UNUSED_RESULT pipe_pop_eager(pipe_consumer_t*,
                                                           void* target,
                                                           size_t count);
 

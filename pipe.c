@@ -261,6 +261,8 @@ static void cond_destroy(cond_t* c)
  * ensure the structure is maintained and data can be easily copied in/out.
  *
  * Data is 'push'ed after the end pointer and 'pop'ed from the begin pointer.
+ * There is always one sentinel element in the pipe, to distinguish between an
+ * empty pipe and a full pipe.
  *
  * Invariants:
  *
@@ -305,15 +307,15 @@ struct pipe_t {
                        // to shrink because it would just end up growing again.
                        // To modify this variable, you must lock the whole pipe.
            max_cap;    // The maximum capacity of the pipe before push requests
-                       // are blocked. This is read-only and therefore does not
-                       // need to be locked to read. To modify this variable,
-                       // you must lock the whole pipe.
+                       // are blocked. To read or write to this variable, you
+                       // must hold 'end_lock'.
 
     char*  buffer,     // The internal buffer, holding the enqueued elements.
                        // to modify this variable, you must lock the whole pipe.
         *  bufend,     // One past the end of the buffer, so that the actual
                        // elements are stored in in interval [buffer, bufend).
-        *  begin,      // Always points to the left-most element in the pipe.
+        *  begin,      // Always points to the sentinel element. `begin + elem_size`
+                       // points to the left-most element in the pipe.
                        // To modify this variable, you must lock begin_lock.
         *  end;        // Always points past the right-most element in the pipe.
                        // To modify this variable, you must lock end_lock.
@@ -334,14 +336,28 @@ struct pipe_t {
 // Converts a pointer to either a producer or consumer into a suitable pipe_t*.
 #define PIPIFY(handle) ((pipe_t*)(handle))
 
+// We wrap elem_size in a function so we can annotate it with PURE, allowing
+// the compiler's CSE to eliminate extraneous memory accesses.
+static inline PURE size_t __pipe_elem_size(pipe_t* p)
+{
+    return p->elem_size;
+}
+
+size_t pipe_elem_size(pipe_generic_t* p)
+{
+    return __pipe_elem_size(PIPIFY(p));
+}
+
+
 // Represents a snapshot of a pipe. We often don't need all our values
 // up-to-date (usually only one of begin or end). By passing this around, we
 // avoid constantly wrecking our cache by accessing the real pipe_t.
 typedef struct {
-    char* buffer,
-        * bufend,
-        * begin,
-        * end;
+    char*   buffer,
+        *   bufend,
+        *   begin,
+        *   end;
+    size_t elem_size;
 } snapshot_t;
 
 static inline snapshot_t make_snapshot(pipe_t* p)
@@ -351,6 +367,7 @@ static inline snapshot_t make_snapshot(pipe_t* p)
         .bufend = p->bufend,
         .begin  = p->begin,
         .end    = p->end,
+        .elem_size = __pipe_elem_size(p),
     };
 }
 
@@ -362,10 +379,11 @@ static inline snapshot_t make_snapshot(pipe_t* p)
 #define DEFAULT_MINCAP  32
 #endif
 
-// Returns the maximum number of bytes the buffer can hold.
+// Returns the maximum number of bytes the buffer can hold, excluding the
+// sentinel element.
 static inline size_t capacity(snapshot_t s)
 {
-    return s.bufend - s.buffer;
+    return s.bufend - s.buffer - s.elem_size;
 }
 
 // Does the buffer wrap around?
@@ -373,16 +391,19 @@ static inline size_t capacity(snapshot_t s)
 //   false -> nowrap
 static inline bool wraps_around(snapshot_t s)
 {
-    return unlikely(s.begin > s.end);
+    return unlikely(s.begin >= s.end);
 }
 
-// Returns the number of bytes currently in use in the buffer.
+// Returns the number of bytes currently in use in the buffer, excluding the
+// sentinel element.
 static inline size_t bytes_in_use(snapshot_t s)
 {
-    return wraps_around(s)
+    return (wraps_around(s)
     //         v   right half   v   v     left half    v
             ? ((s.end - s.buffer) + (s.bufend - s.begin))
-            : (s.end - s.begin);
+            : (s.end - s.begin))
+        // exclude the sentinel element.
+        - s.elem_size;
 }
 
 static inline char* wrap_ptr_if_necessary(char* buffer,
@@ -423,6 +444,9 @@ static size_t CONSTEXPR next_pow2(size_t n)
     // and portable. However, on x86, it will be faster to use the BSR (bit-scan
     // reverse) instruction. Since this isn't straight C, it has been omitted,
     // but may be best for your platform.
+    //
+    // clang 3.0 is smart enough to turn this code into a bsr. gcc 4.6 isn't. I
+    // haven't tested higher versions.
     n--;
 
     for(size_t shift = 1; shift < (sizeof n)*8; shift <<= 1)
@@ -471,7 +495,7 @@ static inline void check_invariants(pipe_t* p)
     assertume(in_bounds(s.buffer, s.end, s.bufend));
 
     if(s.begin == s.end)
-        assertume(bytes_in_use(s) == 0);
+        assertume(bytes_in_use(s) == capacity(s));
 
     assertume(in_bounds(DEFAULT_MINCAP*p->elem_size, p->min_cap, p->max_cap));
     assertume(in_bounds(p->min_cap, capacity(s), p->max_cap));
@@ -491,18 +515,6 @@ static inline void unlock_pipe(pipe_t* p)
     check_invariants(p);
     mutex_unlock(&p->begin_lock);
     mutex_unlock(&p->end_lock);
-}
-
-// We wrap elem_size in a function so we can annotate it with PURE, allowing
-// the compiler's CSE to eliminate extraneous memory accesses.
-static inline PURE size_t __pipe_elem_size(pipe_t* p)
-{
-    return p->elem_size;
-}
-
-size_t pipe_elem_size(pipe_generic_t* p)
-{
-    return __pipe_elem_size(PIPIFY(p));
 }
 
 // runs some code while automatically locking and unlocking the pipe. If `break'
@@ -537,9 +549,9 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
         .max_cap = limit ? next_pow2(max(limit, cap)) : ~(size_t)0,
 
         .buffer = buf,
-        .bufend = buf + cap,
+        .bufend = buf + cap + elem_size,
         .begin  = buf,
-        .end    = buf,
+        .end    = buf + elem_size,
 
         // Since we're issuing a pipe_t, it counts as both a producer and a
         // consumer since it can issue new instances of both. Therefore, the
@@ -695,46 +707,53 @@ static inline char* copy_pipe_into_new_buf(snapshot_t s,
     return buf;
 }
 
+// Resizes the buffer to make room for at least 'new_size' elements, returning
+// an updated snapshot of the pipe state.
+//
+// The new size MUST be bigger than the number of elements currently in the
+// pipe.
+//
 // The pipe must be fully locked on entrance to this function.
 static snapshot_t resize_buffer(pipe_t* p, size_t new_size)
 {
     check_invariants(p);
 
     const size_t max_cap = p->max_cap,
-                 min_cap = p->min_cap;
+                 min_cap = p->min_cap,
+                 elem_size = __pipe_elem_size(p);
 
     assertume(new_size >= bytes_in_use(make_snapshot(p)));
 
     if(unlikely(new_size >= max_cap))
         new_size = max_cap;
 
-    if(new_size < min_cap)
+    if(new_size <= min_cap)
         return make_snapshot(p);
 
-    char* new_buf = malloc(new_size);
+    char* new_buf = malloc(new_size + elem_size);
     p->end = copy_pipe_into_new_buf(make_snapshot(p), new_buf);
 
     p->begin  =
     p->buffer = (free(p->buffer), new_buf);
 
-    p->bufend = new_buf + new_size;
+    p->bufend = new_buf + new_size + elem_size;
 
     check_invariants(p);
 
     return make_snapshot(p);
 }
 
-// Ensures the buffer has enough room for `count' more bytes. This function
-// assumes p->end_lock is locked. Returns a valid snapshot of the pipe.
-static inline snapshot_t validate_size(pipe_t* p, snapshot_t s, size_t count)
+static inline snapshot_t validate_size_impl(pipe_t* p,
+                                            snapshot_t s,
+                                            size_t count,
+                                            bool should_unlock)
 {
     size_t elem_size    = __pipe_elem_size(p),
            new_bytes    = count*elem_size,
            cap          = capacity(s),
            bytes_needed = bytes_in_use(s) + new_bytes;
 
-    // We add 1 to ensure p->begin != p->end unless p->elem_count == 0,
-    // maintaining one of our invariants.
+    // We add 1 to ensure p->begin != p->end unless the pipe is empty.
     if(unlikely(bytes_needed > cap))
     {
         // upgrade our lock, then re-check. By taking both locks (end and begin)
@@ -746,24 +765,53 @@ static inline snapshot_t validate_size(pipe_t* p, snapshot_t s, size_t count)
 
             if(likely(bytes_needed > cap))
                 s = resize_buffer(p, next_pow2(bytes_needed));
+        }
 
-        } mutex_unlock(&p->begin_lock);
+        // Unlock the pipe if requested.
+        if(should_unlock)
+            mutex_unlock(&p->begin_lock);
+    }
+    else
+    {
+        // If we're not unlocking, this function assures that the whole pipe is
+        // locked on exit. With this condition, the pipe is locked in either
+        // case.
+        if(!should_unlock)
+            mutex_lock(&p->begin_lock);
     }
 
     return s;
 }
 
-static inline void process_push(snapshot_t s,
+// Ensures the buffer has enough room for `count' more bytes. This function
+// assumes p->end_lock is locked, and will have p->end_lock and p->begin_lock
+// locked on exit - equivalent to a lock_pipe call. Returns a valid snapshot
+// of the pipe.
+static inline snapshot_t validate_size_locked(pipe_t* p, snapshot_t s, size_t count)
+{
+    return validate_size_impl(p, s, count, false);
+}
+
+// Ensures the buffer has enough room for `count' more bytes. This function
+// assumes p->end_lock is locked. Returns a valid snapshot of the pipe.
+static inline snapshot_t validate_size(pipe_t* p, snapshot_t s, size_t count)
+{
+    return validate_size_impl(p, s, count, true);
+}
+
+// Runs the actual push, assuming there is enough room in the buffer.
+//
+// Returns the new 'end' pointer.
+static inline char* process_push(snapshot_t s,
                                 const void* restrict elems,
-                                size_t bytes_to_copy,
-                                char** end // [out] A pointer into the pipe
-                                           // which will be updated with the
-                                           // new end pointer.
+                                size_t bytes_to_copy
                                )
 {
     assertume(bytes_to_copy != 0);
 
-    s.end = wrap_ptr_if_necessary(s.buffer, s.end, s.bufend);
+    // This shouldn't be necessary.
+    //s.end = wrap_ptr_if_necessary(s.buffer, s.end, s.bufend);
+    assertume(s.end != s.bufend);
 
     // If we currently have a nowrap buffer, we may have to wrap the new
     // elements. Copy as many as we can at the end, then start copying into the
@@ -789,7 +837,7 @@ static inline void process_push(snapshot_t s,
     s.end = wrap_ptr_if_necessary(s.buffer, s.end, s.bufend);
 
     // ...and update the end pointer!
-    *end = s.end;
+    return s.end;
 }
 
 // Will spin until there is enough room in the buffer to push any elements.
@@ -841,15 +889,14 @@ static inline void __pipe_push(pipe_t* p,
 
         // Finally, we can now begin with pushing as many elements into the
         // queue as possible.
-        process_push(s, elems,
-                     pushed = min(count, max_cap - bytes_in_use(s)),
-                     &p->end
-        );
+        p->end = process_push(s, elems,
+                     pushed = min(count, max_cap - bytes_in_use(s)));
     } mutex_unlock(&p->end_lock);
 
     assertume(pushed > 0);
 
-    if(unlikely(pushed == 1))
+    // Signal if we've only pushed one element, broadcast if we've pushed more.
+    if(unlikely(pushed == __pipe_elem_size(p)))
         cond_signal(&p->just_pushed);
     else
         cond_broadcast(&p->just_pushed);
@@ -866,6 +913,132 @@ void pipe_push(pipe_producer_t* p, const void* restrict elems, size_t count)
 {
     count *= __pipe_elem_size(PIPIFY(p));
     __pipe_push(PIPIFY(p), elems, count);
+}
+
+#ifdef DEBUG
+// For testing/debugging only, and is only available in debug mode. Assuming a
+// pipe of ints, prints them out. This function is not included or documented
+// in the header file!
+
+#include <stdio.h>
+
+void pipe_debug(pipe_t* p, const char* id)
+{
+    printf("%s: [ ", id);
+    for(int* ptr = (int*)p->buffer; ptr != (int*)p->bufend; ++ptr)
+        printf("%i ", *ptr);
+    printf("]\n");
+    printf("begin: %lu    end: %lu\n", p->begin - p->buffer, p->end - p->buffer);
+}
+#endif
+
+// This works in three phases:                  '+' = new element
+//                                              '=' = old element
+//                                              ' ' = empty
+//
+//          WRAP                        NOWRAP
+//  [===>        >S========]     [>S======>            ]
+//
+// 1) Copy until the buffer is full, stop if we every run out of new elements.
+//
+//  [====+++++++>>S========]     [>S=======+++++++++++>]
+//
+// 2) Copy to the range [start, bufend), again, stopping when out of elements.
+//    Also, move start and end appropriately. Note the NOWRAP case runs out of
+//    elements before this causes issues.
+//
+//  [S===++++++++++++++++>>]     [++++++++>>S++++++++++]
+//
+// 3) Copy from bufstart to bufend, stopping early (which will definitely
+//    happen).
+//
+//  [+++>>S++++++++++++++++]     [++++++++>>S++++++++++]
+void pipe_push_clobber(pipe_producer_t* pp,
+                       const void* restrict elems, size_t count)
+{
+    pipe_t* p = PIPIFY(pp);
+    size_t elem_size = __pipe_elem_size(p);
+
+    // We signal if pushing one element, and broadcast otherwise.
+    bool should_signal = count == 1;
+
+    count *= elem_size;
+
+    { mutex_lock(&p->end_lock);
+        snapshot_t s = make_snapshot(p);
+
+        // if no more consumers...
+        if(unlikely(p->consumer_refcount == 0))
+        {
+            mutex_unlock(&p->end_lock);
+            return;
+        }
+
+        size_t max_cap = p->max_cap;
+
+        const char* restrict data_left = elems;
+        size_t amount_left = count;
+
+        // If the number of elements to push is smaller than our maximum
+        // capacity, only copy the last set. They'd just be overwritten anyhow.
+        if(max_cap < count)
+        {
+            data_left += count - max_cap;
+            amount_left = max_cap;
+        }
+
+        s = validate_size_locked(p, s, amount_left);
+        // The pipe is now fully locked.
+
+        // PHASE 1 - Push to capacity.
+
+        size_t pushed;
+        s.end = process_push(s, data_left,
+                     pushed = min(amount_left, max_cap - bytes_in_use(s)));
+
+        // PHASE 2 - Overwrite the beginning of the buffer with new data, until
+        //           we hit bufend.
+        
+        data_left   += pushed;
+        amount_left -= pushed;
+
+        s.begin = offset_memcpy(s.begin,
+                                data_left,
+                                pushed = min(amount_left, (size_t)(s.bufend - s.begin)));
+        s.end += pushed;
+
+        s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
+        s.end   = wrap_ptr_if_necessary(s.buffer, s.end,   s.bufend);
+
+        // PHASE 3 - Overwrite from the start of the buffer to the end of the
+        //           input data.
+        //
+        // We ensured (in validate_size_locked and the if statement above its
+        // call) that we were only copying, at most, max_cap bytes and that the
+        // remaining buffer is appropriately sized. Therefore, we just copy any
+        // remaining data.
+        
+        data_left   += pushed;
+        amount_left -= pushed;
+
+        s.begin = offset_memcpy(s.begin, data_left, pushed = amount_left);
+        s.end += pushed;
+
+        s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
+        s.end   = wrap_ptr_if_necessary(s.buffer, s.end,   s.bufend);
+
+        // Reflect our snapshot back onto the pipe. We should not have modified
+        // p->buffer nor p->bufend since validate_size_locked, where we got our
+        // snapshot.
+        p->begin = s.begin;
+        p->end   = s.end;
+
+    } unlock_pipe(p);
+
+    if(unlikely(should_signal))
+        cond_signal(&p->just_pushed);
+    else
+        cond_broadcast(&p->just_pushed);
 }
 
 // Waits for at least one element to be in the pipe. p->begin_lock must be
@@ -893,14 +1066,18 @@ static inline snapshot_t pop_without_locking(snapshot_t s,
                                              char** begin // [out]
                                             )
 {
-    s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
+    // This wrapping shouldn't be necessary.
+    //s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
+    assertume(s.begin != s.bufend);
+
+    size_t elem_size = s.elem_size;
 
     // Copy either as many bytes as requested, or the available bytes in the RHS
     // of a wrapped buffer - whichever is smaller.
     {
-        size_t first_bytes_to_copy = min(bytes_to_copy, (size_t)(s.bufend - s.begin));
+        size_t first_bytes_to_copy = min(bytes_to_copy, (size_t)(s.bufend - s.begin - elem_size));
 
-        target = offset_memcpy(target, s.begin, first_bytes_to_copy);
+        target = offset_memcpy(target, s.begin + elem_size, first_bytes_to_copy);
 
         bytes_to_copy -= first_bytes_to_copy;
         s.begin       += first_bytes_to_copy;
@@ -910,8 +1087,13 @@ static inline snapshot_t pop_without_locking(snapshot_t s,
 
     if(unlikely(bytes_to_copy > 0))
     {
-        memcpy(target, s.buffer, bytes_to_copy);
+        s.begin += elem_size;
+        s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
+
+        memcpy(target, s.begin, bytes_to_copy);
         s.begin += bytes_to_copy;
+
+        s.begin -= elem_size;
 
         s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
     }
@@ -967,7 +1149,7 @@ static inline void trim_buffer(pipe_t* p, snapshot_t s)
 // Performs the actual pop, except `requested' is now in bytes as opposed to
 // elements.
 //
-// This will behave eagarly, returning as many elements that it can into
+// This will behave eagerly, returning as many elements that it can into
 // `target' as it can fill right now.
 static inline size_t __pipe_pop(pipe_t* p,
                                 void* restrict target,
@@ -1024,7 +1206,7 @@ size_t pipe_pop(pipe_consumer_t* p, void* target, size_t count)
     return bytes_popped / elem_size;
 }
 
-size_t pipe_pop_eagar(pipe_consumer_t* p, void* target, size_t count)
+size_t pipe_pop_eager(pipe_consumer_t* p, void* target, size_t count)
 {
     size_t elem_size = __pipe_elem_size(PIPIFY(p));
     return __pipe_pop(PIPIFY(p), target, count*elem_size) / elem_size;

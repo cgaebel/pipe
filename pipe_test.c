@@ -184,6 +184,43 @@ DEF_TEST(parallel_multiplier)
     validate_consumer(pipeline.out, 1); pipe_consumer_free(pipeline.out);
 }
 
+// This test is only legal if DEFAULT_MINCAP is less than or equal to 8.
+//
+// Therefore, this test is disabled in release mode.
+#ifdef DEBUG
+DEF_TEST(clobbering)
+{
+    pipe_t* p = pipe_new(sizeof(int), 5);
+
+    pipe_producer_t* pro = pipe_producer_new(p);
+    pipe_consumer_t* con = pipe_consumer_new(p);
+
+    pipe_free(p);
+
+    const int x[] = { 1, 2, 3 };
+    int y[3];
+
+    pipe_push_clobber(pro, x, 3);
+    size_t popped = pipe_pop(con, y, 3);
+    assert(popped == 3);
+    assert(array_eq_len(x, y, 3));
+
+    int x2[] = { 2, 3, 1, 2, 3, 1, 2, 3 };
+    int y2[8];
+
+    pipe_push_clobber(pro, x, 3);
+    pipe_push_clobber(pro, x, 3);
+    pipe_push_clobber(pro, x, 3);
+    popped = pipe_pop(con, y2, 8);
+    assert(popped == 8);
+
+    assert(array_eq_len(x2, y2, 8));
+
+    pipe_producer_free(pro);
+    pipe_consumer_free(con);
+}
+#endif
+
 /*
  * TEST IDEAS:
  *
@@ -205,6 +242,9 @@ void pipe_run_test_suite(void)
     RUN_TEST(basic_storage);
     RUN_TEST(pipeline_multiplier);
     RUN_TEST(parallel_multiplier);
+#ifdef DEBUG
+    RUN_TEST(clobbering);
+#endif
 }
 
 /* vim: set et ts=4 sw=4 softtabstop=4 textwidth=80: */
