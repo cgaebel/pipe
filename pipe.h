@@ -185,9 +185,14 @@ void NO_NULL_POINTERS pipe_push(pipe_producer_t*, const void* elems, size_t coun
  * If the pipe is full, this version of pipe_push will automatically pop enough
  * elements from the front of the queue to make room for the new elements in
  * the pipe.
+ *
+ * Disabled unless someone tells me they want it. Enabling this function voids
+ * your warrant.
  */
+/*
 void NO_NULL_POINTERS pipe_push_clobber(pipe_producer_t*,
                                         const void* elems, size_t count);
+*/
 
 /*
  * Tries to pop `count' elements out of the pipe and into `target', returning

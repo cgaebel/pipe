@@ -373,7 +373,7 @@ static inline snapshot_t make_snapshot(pipe_t* p)
 
 // The initial minimum capacity of the pipe. This can be overridden dynamically
 // with pipe_reserve.
-#ifdef DEBUG
+#ifdef PIPE_DEBUG
 #define DEFAULT_MINCAP  2
 #else
 #define DEFAULT_MINCAP  32
@@ -915,7 +915,8 @@ void pipe_push(pipe_producer_t* p, const void* restrict elems, size_t count)
     __pipe_push(PIPIFY(p), elems, count);
 }
 
-#ifdef DEBUG
+/*
+#ifdef PIPE_DEBUG
 // For testing/debugging only, and is only available in debug mode. Assuming a
 // pipe of ints, prints them out. This function is not included or documented
 // in the header file!
@@ -1040,6 +1041,7 @@ void pipe_push_clobber(pipe_producer_t* pp,
     else
         cond_broadcast(&p->just_pushed);
 }
+*/
 
 // Waits for at least one element to be in the pipe. p->begin_lock must be
 // locked when entering this function, and a new, valid snapshot is returned.

@@ -119,7 +119,7 @@ static void double_elems(const void* elems, size_t count, pipe_producer_t* out, 
     pipe_push(out, outbuffer, count);
 }
 
-#ifdef DEBUG
+#ifdef PIPE_DEBUG
 #define MAX_NUM     250000
 #else
 #define MAX_NUM     500000
@@ -184,10 +184,11 @@ DEF_TEST(parallel_multiplier)
     validate_consumer(pipeline.out, 1); pipe_consumer_free(pipeline.out);
 }
 
+/*
 // This test is only legal if DEFAULT_MINCAP is less than or equal to 8.
 //
 // Therefore, this test is disabled in release mode.
-#ifdef DEBUG
+#ifdef PIPE_DEBUG
 DEF_TEST(clobbering)
 {
     pipe_t* p = pipe_new(sizeof(int), 5);
@@ -220,6 +221,7 @@ DEF_TEST(clobbering)
     pipe_consumer_free(con);
 }
 #endif
+*/
 
 /*
  * TEST IDEAS:
@@ -242,9 +244,11 @@ void pipe_run_test_suite(void)
     RUN_TEST(basic_storage);
     RUN_TEST(pipeline_multiplier);
     RUN_TEST(parallel_multiplier);
-#ifdef DEBUG
+/*
+#ifdef PIPE_DEBUG
     RUN_TEST(clobbering);
 #endif
+*/
 }
 
 /* vim: set et ts=4 sw=4 softtabstop=4 textwidth=80: */
