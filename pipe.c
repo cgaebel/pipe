@@ -818,8 +818,11 @@ size_t pipe_pop(pipe_consumer_t* c, void* restrict target, size_t requested)
 
     (popped == 1 ? cond_signal : cond_broadcast)(&p->just_popped);
 
-    return popped +
-        pipe_pop(c, (char*)target + popped*p->elem_size, requested - popped);
+    if(popped == requested)
+        return popped;
+    else
+        return popped +
+            pipe_pop(c, (char*)target + popped*p->elem_size, requested - popped);
 }
 
 size_t pipe_elem_size(pipe_generic_t* p)

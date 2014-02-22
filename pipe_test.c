@@ -177,6 +177,40 @@ DEF_TEST(parallel_multiplier)
     validate_consumer(pipeline.out, 1); pipe_consumer_free(pipeline.out);
 }
 
+DEF_TEST(bug)
+{
+    pipe_t* pipe = pipe_new(sizeof(int), 0);
+    pipe_producer_t* p = pipe_producer_new(pipe);
+    pipe_consumer_t* c = pipe_consumer_new(pipe);
+    pipe_free(pipe);
+
+    int a[] = { 0, 1, 2, 3, 4 };
+    int b[] = { 9, 8, 7, 6, 5 };
+
+    pipe_push(p, a, countof(a));
+    pipe_push(p, b, countof(b));
+
+    int bufa[6];
+    int bufb[4];
+
+    size_t acnt = pipe_pop(c, bufa, countof(bufa)),
+           bcnt = pipe_pop(c, bufb, countof(bufb));
+
+    int expecteda[] = {
+        0, 1, 2, 3, 4, 9
+    };
+
+    int expectedb[] = {
+        8, 7, 6, 5
+    };
+
+    assert(array_eq_len(expecteda, bufa, acnt));
+    assert(array_eq_len(expectedb, bufb, bcnt));
+
+    pipe_consumer_free(c);
+    pipe_producer_free(p);
+}
+
 /*
  * TEST IDEAS:
  *
@@ -195,6 +229,7 @@ DEF_TEST(parallel_multiplier)
 
 void pipe_run_test_suite(void)
 {
+    RUN_TEST(bug);
     RUN_TEST(basic_storage);
     RUN_TEST(pipeline_multiplier);
     RUN_TEST(parallel_multiplier);
