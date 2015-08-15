@@ -962,33 +962,26 @@ static inline snapshot_t pop_without_locking(snapshot_t s,
     {
         size_t first_bytes_to_copy = min(bytes_to_copy, (size_t)(s.bufend - s.begin - elem_size));
 
-        assert(s.buffer <= s.begin + elem_size);
-        assert(s.begin + elem_size + first_bytes_to_copy <= s.bufend);
         target = offset_memcpy(target, s.begin + elem_size, first_bytes_to_copy);
 
         bytes_to_copy -= first_bytes_to_copy;
 
         s.begin       += first_bytes_to_copy;
         s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
-        assert(in_bounds(s.buffer, s.begin, s.bufend));
     }
 
     if(unlikely(bytes_to_copy > 0))
     {
         s.begin += elem_size;
         s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
-        assert(in_bounds(s.buffer, s.begin, s.bufend));
 
         memcpy(target, s.begin, bytes_to_copy);
 
         s.begin += bytes_to_copy;
         s.begin = wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
-        assert(in_bounds(s.buffer, s.begin, s.bufend));
 
         s.begin -= elem_size;
         s.begin = rev_wrap_ptr_if_necessary(s.buffer, s.begin, s.bufend);
-        assert(in_bounds(s.buffer, s.begin, s.bufend));
-
     }
 
     // Since we cached begin on the stack, we need to reflect our changes back
