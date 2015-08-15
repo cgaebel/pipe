@@ -3,7 +3,7 @@
  *
  * The MIT License
  * Copyright (c) 2011 Clark Gaebel <cg.wowus.cg@gmail.com>
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
@@ -184,6 +184,44 @@ DEF_TEST(parallel_multiplier)
     validate_consumer(pipeline.out, 1); pipe_consumer_free(pipeline.out);
 }
 
+struct Foo
+{
+    int a;
+    int b;
+    int c;
+};
+
+DEF_TEST(issue_4)
+{
+    pipe_t* p = pipe_new(sizeof(struct Foo), 0);
+    pipe_producer_t* producer = pipe_producer_new(p);
+    pipe_consumer_t* consumer = pipe_consumer_new(p);
+
+    for(int i = 0; i < 22; ++i)
+    {
+        struct Foo f;
+        pipe_push(producer, &f, 1);
+    }
+
+    for(int i = 0; i < 22; ++i)
+    {
+        struct Foo f;
+        (void)pipe_pop(consumer, &f, 1);
+    }
+
+    for(int i = 0; i < 21; ++i)
+    {
+        struct Foo f;
+        pipe_push(producer, &f, 1);
+        (void)pipe_pop(consumer, &f, 1);
+    }
+
+    pipe_producer_free(producer);
+    pipe_consumer_free(consumer);
+
+    pipe_free(p);
+}
+
 /*
 // This test is only legal if DEFAULT_MINCAP is less than or equal to 8.
 //
@@ -244,6 +282,7 @@ void pipe_run_test_suite(void)
     RUN_TEST(basic_storage);
     RUN_TEST(pipeline_multiplier);
     RUN_TEST(parallel_multiplier);
+    RUN_TEST(issue_4);
 /*
 #ifdef PIPE_DEBUG
     RUN_TEST(clobbering);
