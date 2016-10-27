@@ -30,7 +30,7 @@ thread_ring_release: $(OBJS) thread_ring.c
 pipe.h:
 
 main.c: pipe.h
-	
+
 pipe.c: pipe.h
 
 pipe_test.c: pipe.h pipe_util.h

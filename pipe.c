@@ -542,7 +542,7 @@ static inline void unlock_pipe(pipe_t* p)
     unlock_pipe(p);              \
  } while(0)
 
-pipe_t* pipe_new(size_t elem_size, size_t limit)
+pipe_t* pipe_new(size_t elem_size, size_t original_limit)
 {
     assertume(elem_size != 0);
 
@@ -558,7 +558,7 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
 
     // Change the limit from being in "elements" to being in "bytes", and make
     // room for the sentinel element.
-    limit = (limit + 1) * elem_size;
+    size_t limit = (original_limit + 1) * elem_size;
 
     if(unlikely(p == NULL || buf == NULL))
         return free(p), free(buf), NULL;
@@ -566,7 +566,7 @@ pipe_t* pipe_new(size_t elem_size, size_t limit)
     *p = (pipe_t) {
         .elem_size  = elem_size,
         .min_cap = cap,
-        .max_cap = limit ? next_pow2(max(limit, cap)) : ~(size_t)0,
+        .max_cap = original_limit ? next_pow2(max(limit, cap)) : ~(size_t)0,
 
         .buffer = buf,
         .bufend = buf + cap,
@@ -782,7 +782,7 @@ static inline snapshot_t validate_size(pipe_t* p,
             size_t elems_needed = bytes_needed / elem_size;
 
             if(likely(bytes_needed > cap))
-                s = resize_buffer(p, next_pow2(elems_needed)*elem_size);
+                s = resize_buffer(p, next_pow2(elems_needed+1)*elem_size);
         }
 
         // Unlock the pipe if requested.

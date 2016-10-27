@@ -222,6 +222,29 @@ DEF_TEST(issue_4)
     pipe_free(p);
 }
 
+DEF_TEST(issue_5)
+{
+  static const int NUM = 32;
+  pipe_t* pipe = pipe_new(sizeof(int), 0);
+  pipe_producer_t* p = pipe_producer_new(pipe);
+  pipe_consumer_t* c = pipe_consumer_new(pipe);
+  pipe_free(pipe);
+
+  int data[NUM];
+  for(int i=0; i < NUM; ++i)
+    data[i] = i;
+  pipe_push(p, data, NUM);
+  pipe_producer_free(p);
+
+  int buf[NUM];
+  size_t ret = pipe_pop(c, buf, NUM);
+  assert(ret == NUM);
+  for(int i=0; i < NUM; ++i)
+    assert(buf[i] == data[i]);
+
+  pipe_consumer_free(c);
+}
+
 /*
 // This test is only legal if DEFAULT_MINCAP is less than or equal to 8.
 //
@@ -283,6 +306,7 @@ void pipe_run_test_suite(void)
     RUN_TEST(pipeline_multiplier);
     RUN_TEST(parallel_multiplier);
     RUN_TEST(issue_4);
+    RUN_TEST(issue_5);
 /*
 #ifdef PIPE_DEBUG
     RUN_TEST(clobbering);
