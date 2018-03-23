@@ -36,12 +36,15 @@ extern "C" {
 #define MALLOC_LIKE         __attribute__((malloc))
 #define NO_NULL_POINTERS    __attribute__((nonnull))
 #define WARN_UNUSED_RESULT  __attribute__((warn_unused_result))
-#else
+#elif _WIN32
 /* Feel free to fill in results for more compilers =) */
 #define PURE
 #define MALLOC_LIKE
 #define NO_NULL_POINTERS
-#define WARN_UNUSED_RESULT
+#define WARN_UNUSED_RESULT 
+#if (_MSC_VER == 1900)
+    #define restrict __restrict
+#endif
 #endif
 
 /*
