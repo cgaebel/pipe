@@ -44,7 +44,7 @@ const char _pipe_copyright[] =
 #ifndef max
 #define max(a, b) ((a) >= (b) ? (a) : (b))
 #endif
-
+//iteration
 #ifdef __GNUC__
 #define likely(cond)   __builtin_expect(!!(cond), 1)
 #define unlikely(cond) __builtin_expect(  (cond), 0)
