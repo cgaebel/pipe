@@ -91,7 +91,7 @@ pipeline_t pipe_parallel(size_t           instances,
 /*
  * A pipeline consists of a list of functions and pipes. As data is recieved in
  * one end, it is processed by each of the pipes and pushed into the other end.
- * Each stage's processing is done in a seperate thread. The last parameter must
+ * Each stage's processing is done in a separate thread. The last parameter must
  * be NULL (in place of a pipe_processor_t) if you want to have a consumer_t
  * returned, or 0 (in place of a sizeof()) if you don't want or need a consumer_t.
  * If the last parameter replaces a sizeof(), the return value's `c' member will
