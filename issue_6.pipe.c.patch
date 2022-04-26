@@ -1,0 +1,69 @@
+diff --git a/pipe.c b/pipe.c
+index 9af421a..e3c8c26 100644
+--- a/pipe.c
++++ b/pipe.c
+@@ -514,7 +514,7 @@ static inline void check_invariants(pipe_t* p)
+     if(s.begin == s.end)
+         assertume(bytes_in_use(s) == capacity(s));
+ 
+-    assertume(in_bounds(DEFAULT_MINCAP*p->elem_size, p->min_cap, p->max_cap));
++    //assertume(in_bounds(DEFAULT_MINCAP*p->elem_size, p->min_cap, p->max_cap));
+     assertume(in_bounds(p->min_cap, capacity(s) + p->elem_size, p->max_cap));
+ }
+ 
+@@ -743,6 +743,8 @@ static snapshot_t resize_buffer(pipe_t* p, size_t new_size)
+                  elem_size = __pipe_elem_size(p);
+ 
+     assertume(new_size >= bytes_in_use(make_snapshot(p)));
++    assertume(new_size + elem_size > new_size); // overflow
++    new_size += elem_size; // include sentinel
+ 
+     if(unlikely(new_size >= max_cap))
+         new_size = max_cap;
+@@ -750,13 +752,13 @@ static snapshot_t resize_buffer(pipe_t* p, size_t new_size)
+     if(new_size <= min_cap)
+         return make_snapshot(p);
+ 
+-    char* new_buf = malloc(new_size + elem_size);
++    char* new_buf = malloc(new_size);
+     p->end = copy_pipe_into_new_buf(make_snapshot(p), new_buf);
+ 
+     p->begin  =
+     p->buffer = (free(p->buffer), new_buf);
+ 
+-    p->bufend = new_buf + new_size + elem_size;
++    p->bufend = new_buf + new_size;
+ 
+     check_invariants(p);
+ 
+@@ -782,7 +784,7 @@ static inline snapshot_t validate_size(pipe_t* p,
+             size_t elems_needed = bytes_needed / elem_size;
+ 
+             if(likely(bytes_needed > cap))
+-                s = resize_buffer(p, next_pow2(elems_needed+1)*elem_size);
++                s = resize_buffer(p, next_pow2(elems_needed)*elem_size);
+         }
+ 
+         // Unlock the pipe if requested.
+@@ -844,9 +846,11 @@ static inline snapshot_t wait_for_room(pipe_t* p, size_t* max_cap)
+ 
+     size_t consumer_refcount = p->consumer_refcount;
+ 
++    size_t elem_size = __pipe_elem_size(p);
++
+     *max_cap = p->max_cap;
+ 
+-    for(; unlikely(bytes_used == *max_cap) && likely(consumer_refcount > 0);
++    for(; unlikely(bytes_used + elem_size >= *max_cap) && likely(consumer_refcount > 0);
+           s                 = make_snapshot(p),
+           bytes_used        = bytes_in_use(s),
+           consumer_refcount = p->consumer_refcount,
+@@ -883,7 +887,7 @@ void __pipe_push(pipe_t* p,
+         // Finally, we can now begin with pushing as many elements into the
+         // queue as possible.
+         p->end = process_push(s, elems,
+-                     pushed = min(count, max_cap - bytes_in_use(s)));
++                     pushed = min(count, capacity(s) - bytes_in_use(s)));
+     } mutex_unlock(&p->end_lock);
+ 
+     assertume(pushed > 0);

@@ -1,0 +1,171 @@
+diff --git a/pipe_test.c b/pipe_test.c
+index 6c8781d..57d160b 100644
+--- a/pipe_test.c
++++ b/pipe_test.c
+@@ -30,6 +30,10 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#ifdef __GNUC__
++#pragma GCC diagnostic ignored "-Wunused-result"
++#endif
++
+ 
+ // Vanity bytes. As long as this isn't removed from the executable, I don't
+ // mind if I don't get credits in a README or any other documentation. Consider
+@@ -245,6 +249,145 @@ DEF_TEST(issue_5)
+   pipe_consumer_free(c);
+ }
+ 
++// set max cap (not infinite)
++DEF_TEST(issue_6_a)
++{
++  static const int NUM = 32;
++  pipe_t* pipe = pipe_new(sizeof(int), NUM);
++  pipe_producer_t* p = pipe_producer_new(pipe);
++  pipe_consumer_t* c = pipe_consumer_new(pipe);
++  pipe_free(pipe);
++
++  int data[NUM];
++  for(int i=0; i < NUM; ++i)
++    data[i] = i;
++  pipe_push(p, data, NUM);
++  pipe_producer_free(p);
++
++  int buf[NUM];
++  size_t ret = pipe_pop(c, buf, NUM);
++  assert(ret == NUM);
++  for(int i=0; i < NUM; ++i)
++    assert(buf[i] == data[i]);
++
++  pipe_consumer_free(c);
++}
++
++// set smaller min cap
++DEF_TEST(issue_6_b)
++{
++  static const int NUM = 16;
++  pipe_t* pipe = pipe_new(sizeof(int), NUM * 2);
++  pipe_reserve(PIPE_GENERIC(pipe), NUM);
++  pipe_producer_t* p = pipe_producer_new(pipe);
++  pipe_consumer_t* c = pipe_consumer_new(pipe);
++  pipe_free(pipe);
++
++  int data[NUM];
++  for(int i=0; i < NUM; ++i)
++    data[i] = i;
++  pipe_push(p, data, NUM);
++  pipe_producer_free(p);
++
++  int buf[NUM];
++  size_t ret = pipe_pop(c, buf, NUM);
++  assert(ret == NUM);
++  for(int i=0; i < NUM; ++i)
++    assert(buf[i] == data[i]);
++
++  pipe_consumer_free(c);
++}
++
++#ifdef _WIN32 // use the native win32 API on Windows
++
++#include <windows.h>
++
++#define thread_create(f, p) CloseHandle(            \
++        CreateThread(NULL,                          \
++                     0,                             \
++                     (LPTHREAD_START_ROUTINE)(f),   \
++                     (p),                           \
++                     0,                             \
++                     NULL))
++
++#define thread_sleep(s) Sleep((s) * 1000)
++
++#else // fall back on pthreads
++
++#include <pthread.h>
++#include <unistd.h>
++
++static inline void thread_create(void *(*f) (void*), void* p)
++{
++    pthread_t t;
++    pthread_create(&t, NULL, f, p);
++}
++
++#define thread_sleep(s) sleep(s)
++
++#endif
++
++typedef struct __issue_6_t {
++  pipe_consumer_t* c;
++  int writing;
++  int read;
++} issue_6_t;
++
++static void* process_pipe_issue_6_c(void* param)
++{
++  static const int NUM = 32;
++  issue_6_t* v = (issue_6_t *)param;
++
++  //printf("Consumer waiting for a bit ...\n");
++  //printf("Consumer starts to read pipe ...\n");
++  thread_sleep(1);
++  assert(v->writing); // producer still writing, blocked from finishing
++  int buf[NUM];
++  size_t ret = pipe_pop(v->c, buf, NUM);
++  assert(ret == NUM);
++  for(int i=0; i < NUM; ++i)
++    assert(buf[i] == i);
++
++  v->read = NUM;
++  pipe_consumer_free(v->c);
++  return NULL;
++}
++
++// producer blocking on push
++// Note: pipe rounds up to power of 2 so initial
++// value of 32 is rounded up to 64 so we block on
++// writing 64 values, not 32
++DEF_TEST(issue_6_c)
++{
++  static const int NUM = 32;
++  pipe_t* pipe = pipe_new(sizeof(int), NUM);
++  pipe_producer_t* p = pipe_producer_new(pipe);
++
++  issue_6_t* params = malloc(sizeof(*params));
++  memset(params, 0, sizeof(*params));
++  params->c = pipe_consumer_new(pipe);
++
++  pipe_free(pipe);
++
++  thread_create(&process_pipe_issue_6_c, params);
++
++  int data[NUM];
++  for(int i=0; i < NUM; ++i)
++    data[i] = i;
++  //printf("Producer pushing ok ...\n");
++  params->writing = 1;
++  pipe_push(p, data, NUM);
++  //printf("Producer pushing should be blocked ...\n");
++  pipe_push(p, data, NUM);
++  //printf("Producer unblocked ...\n");
++  params->writing = 0;
++  thread_sleep(1);
++  assert(params->read == NUM);
++
++  free(params);
++  pipe_producer_free(p);
++}
++
+ /*
+ // This test is only legal if DEFAULT_MINCAP is less than or equal to 8.
+ //
+@@ -307,6 +450,9 @@ void pipe_run_test_suite(void)
+     RUN_TEST(parallel_multiplier);
+     RUN_TEST(issue_4);
+     RUN_TEST(issue_5);
++    RUN_TEST(issue_6_a);
++    RUN_TEST(issue_6_b);
++    RUN_TEST(issue_6_c);
+ /*
+ #ifdef PIPE_DEBUG
+     RUN_TEST(clobbering);
